@@ -49,6 +49,13 @@ uint32_t totalKHashes = 0;
 uint32_t elapsedKHs = 0;
 uint64_t upTime = 0;
 
+// Per-path attempt counters, only used to print a HW vs SW hashrate
+// breakdown under DEBUG_MINING so real hardware can be A/B tested
+// (see FORCE_SW_MINING in mining.h). Each miner task only ever touches
+// its own counter, so no locking is needed.
+volatile uint32_t debugHashesHw = 0;
+volatile uint32_t debugHashesSw[2] = {0, 0};
+
 volatile uint32_t shares; // increase if blockhash has 32 bits of zeroes
 volatile uint32_t valids; // increased if blockhash <= target
 
@@ -592,6 +599,9 @@ void minerWorkerSw(void * task_id)
   std::shared_ptr<JobResult> result;
   uint8_t hash[32];
   uint32_t wdt_counter = 0;
+  #ifdef DEBUG_MINING
+  volatile uint32_t *myDebugCounter = &debugHashesSw[miner_id & 1];
+  #endif
   while (1)
   {
     {
@@ -620,6 +630,9 @@ void minerWorkerSw(void * task_id)
       for (uint32_t n = 0; n < job->nonce_count; ++n)
       {
         ((uint32_t*)(job->sha_buffer+64+12))[0] = job->nonce_start+n;
+        #ifdef DEBUG_MINING
+        (*myDebugCounter)++;
+        #endif
         if (nerd_sha256d_baked(job->midstate, job->sha_buffer+64, job->bake, hash))
         {
           double diff_hash = diff_from_target(hash);
@@ -835,6 +848,9 @@ void minerWorkerHw(void * task_id)
       uint32_t nend = job->nonce_start + job->nonce_count;
       for (uint32_t n = job->nonce_start; n < nend; ++n)
       {
+        #ifdef DEBUG_MINING
+        debugHashesHw++;
+        #endif
         //nerd_sha_hal_wait_idle();
         nerd_sha_ll_write_digest(digest_mid);
         //nerd_sha_hal_wait_idle();
@@ -1029,6 +1045,19 @@ static inline void nerd_sha_ll_fill_text_block_sha256_double()
     reg_addr_buf[15] = 0x00000100;
 }
 
+#ifdef PIPELINED_ASM_MINING
+// See src/pipelined_hw_sha_classic.cpp. Overlaps CPU register-fill work with
+// SHA peripheral busy time instead of idle-spinning through it.
+extern "C" bool pipelined_hw_mine_classic(
+    volatile uint32_t *sha_base,
+    const uint32_t *header_swapped,
+    uint32_t *nonce_swapped_inout,
+    volatile uint32_t *hash_count_low,
+    volatile bool *mining_flag,
+    uint32_t iter_budget);
+extern "C" void pipelined_hw_mine_classic_reinit(void);
+#endif
+
 void minerWorkerHw(void * task_id)
 {
   unsigned int miner_id = (uint32_t)task_id;
@@ -1067,8 +1096,79 @@ void minerWorkerHw(void * task_id)
       memcpy(sha_buffer, job->sha_buffer, 80);
 
       esp_sha_lock_engine(SHA2_256);
+#ifdef PIPELINED_ASM_MINING
+      {
+        // Reverify setup: native-order header + fresh SW midstate/bake.
+        // job->midstate is HW-format and is never computed for classic
+        // ESP32 (only S2/S3/C3 do that), so it can't be reused here.
+        uint8_t native_header_pl[80];
+        for (int i = 0; i < 20; ++i)
+          ((uint32_t *)native_header_pl)[i] = __builtin_bswap32(((const uint32_t *)sha_buffer)[i]);
+        uint32_t sw_midstate_pl[8];
+        uint32_t sw_bake_pl[16];
+        nerd_mids(sw_midstate_pl, native_header_pl);
+        nerd_sha256_bake(sw_midstate_pl, native_header_pl + 64, sw_bake_pl);
+
+        const uint32_t *header_words_pl = (const uint32_t *)sha_buffer;
+        uint32_t nonce_swapped_pl = __builtin_bswap32(job->nonce_start);
+        uint32_t hash_count_low_pl = 0;
+        volatile bool pipelined_active_pl = true;
+
+        while (pipelined_active_pl && hash_count_low_pl < job->nonce_count)
+        {
+          if (s_working_current_job_id != job_in_work)
+          {
+            pipelined_active_pl = false;
+            break;
+          }
+
+          bool hit_pl = pipelined_hw_mine_classic(
+              (volatile uint32_t *)SHA_TEXT_BASE,
+              header_words_pl,
+              &nonce_swapped_pl,
+              &hash_count_low_pl,
+              &pipelined_active_pl,
+              job->nonce_count - hash_count_low_pl);
+
+          if (!hit_pl)
+            break;
+
+          // Asm post-increments nonce_swapped after writing TEXT[3] and
+          // signals BUSY-done on LOAD2 — the candidate is the value that
+          // was actually hashed this iteration, i.e. nonce_swapped - 1.
+          uint32_t cand_swapped_pl = nonce_swapped_pl - 1;
+          uint32_t cand_native_pl  = __builtin_bswap32(cand_swapped_pl);
+
+          ((uint32_t *)(native_header_pl + 64 + 12))[0] = cand_native_pl;
+          uint8_t sw_hash[32];
+          nerd_sha256d_baked(sw_midstate_pl, native_header_pl + 64, sw_bake_pl, sw_hash);
+
+          double diff_hash = diff_from_target(sw_hash);
+          if (diff_hash > result->difficulty)
+          {
+            if (isSha256Valid(sw_hash))
+            {
+              result->difficulty = diff_hash;
+              result->nonce = cand_native_pl;
+              memcpy(result->hash, sw_hash, sizeof(sw_hash));
+            }
+          }
+
+          // Drop any sticky internal H state left by the asm sequence so
+          // the next call starts from a clean SHA engine.
+          pipelined_hw_mine_classic_reinit();
+        }
+        result->nonce_count = hash_count_low_pl;
+        #ifdef DEBUG_MINING
+        debugHashesHw += hash_count_low_pl;
+        #endif
+      }
+#else
       for (uint32_t n = 0; n < job->nonce_count; ++n)
       {
+        #ifdef DEBUG_MINING
+        debugHashesHw++;
+        #endif
         //((uint32_t*)(sha_buffer+64+12))[0] = __builtin_bswap32(job->nonce_start+n);
 
         //sha_hal_hash_block(SHA2_256, s_test_buffer, 64/4, true);
@@ -1113,6 +1213,7 @@ void minerWorkerHw(void * task_id)
           break;
         }
       }
+#endif // PIPELINED_ASM_MINING
       esp_sha_unlock_engine(SHA2_256);
     } else
       vTaskDelay(2 / portTICK_PERIOD_MS);
@@ -1231,6 +1332,18 @@ void runMonitor(void *name)
     { 
       mLastCheck = now_millis;
       last_update_millis = now_millis;
+
+      #ifdef DEBUG_MINING
+      {
+        static uint32_t lastHw = 0, lastSw0 = 0, lastSw1 = 0;
+        uint32_t curHw = debugHashesHw, curSw0 = debugHashesSw[0], curSw1 = debugHashesSw[1];
+        Serial.printf("[HASHRATE] HW=%u/s SW0=%u/s SW1=%u/s (total=%u/s)\n",
+                      curHw - lastHw, curSw0 - lastSw0, curSw1 - lastSw1,
+                      (curHw - lastHw) + (curSw0 - lastSw0) + (curSw1 - lastSw1));
+        lastHw = curHw; lastSw0 = curSw0; lastSw1 = curSw1;
+      }
+      #endif
+
       unsigned long currentKHashes = (Mhashes * 1000) + hashes / 1000;
       elapsedKHs = currentKHashes - totalKHashes;
       totalKHashes = currentKHashes;

@@ -14,6 +14,27 @@
 #define HARDWARE_SHA265
 //#endif
 
+// Build flag to A/B test: classic ESP32 (D0WD, e.g. CYD boards) has a SHA256
+// engine with no way to load an external midstate, so its "hardware" path
+// re-hashes the fixed first block on every nonce attempt (3 HW blocks/nonce)
+// instead of reusing the cached midstate like the software path does (S2/S3/C3
+// don't have this limitation). Define FORCE_SW_MINING to skip the hardware
+// path entirely and run the optimized software miner on both cores, to compare
+// real measured hashrate against the current hybrid HW+SW default.
+#ifdef FORCE_SW_MINING
+#undef HARDWARE_SHA265
+#endif
+
+// Build flag to A/B test: an alternate classic-ESP32 HW mining loop (see
+// src/pipelined_hw_sha_classic.cpp) that overlaps CPU register-fill work
+// with SHA peripheral busy time instead of idle-spinning through it, ported
+// (MIT license, same upstream) from dwespl/nerdminer-axehub. Every candidate
+// hit is still reverified with the existing software nerd_sha256d_baked()
+// path before being trusted, so a bug in the ported asm can only cost a
+// missed share, never a bad submission. Only affects CONFIG_IDF_TARGET_ESP32
+// (classic ESP32 / D0WD, e.g. CYD boards) when HARDWARE_SHA265 is active.
+//#define PIPELINED_ASM_MINING
+
 #define TARGET_BUFFER_SIZE 64
 
 void runMonitor(void *name);
