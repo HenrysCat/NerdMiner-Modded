@@ -42,9 +42,13 @@ String poolAPIUrl;
 // schemas. getPoolAPIUrl() sets this alongside poolAPIUrl so getPoolData()
 // knows how to parse whatever comes back.
 enum PoolApiStyle {
-  POOL_API_PUBLICPOOL = 0, // public-pool.io, nerdminers.org, sethforprivacy, solomining
+  POOL_API_PUBLICPOOL = 0, // public-pool.io, sethforprivacy, solomining
   POOL_API_HMPOOL,         // hmpool.io (HashedMax Unity Pool)
-  POOL_API_HELIOS,         // heliospool.com/.eu/.asia
+  // ckpool-solo family: heliospool.com/.eu/.asia AND pool.nerdminers.org
+  // (confirmed from nerdminers.org's own fork source, golden-guy/ckpool-solo
+  // @nerdminer_v2 -- its per-user JSON uses the same hashrate1hr/workers/
+  // bestever field names as heliospool's schema below).
+  POOL_API_CKPOOL,
 };
 int poolApiStyle = POOL_API_PUBLICPOOL;
 
@@ -439,11 +443,15 @@ String getPoolAPIUrl(void) {
         if (Settings.PoolAddress.indexOf("heliospool.eu") >= 0) region = "eu";
         else if (Settings.PoolAddress.indexOf("heliospool.asia") >= 0) region = "asia";
         poolAPIUrl = "https://btc.heliospool." + region + "/api/users/";
-        poolApiStyle = POOL_API_HELIOS;
+        poolApiStyle = POOL_API_CKPOOL;
     }
     else {
         if (Settings.PoolAddress == "pool.nerdminers.org") {
+            // Runs a ckpool-solo fork (golden-guy/ckpool-solo@nerdminer_v2);
+            // its per-user JSON at this same /users/<address> path uses the
+            // same hashrate1hr/workers/bestever fields as heliospool.
             poolAPIUrl = "https://pool.nerdminers.org/users/";
+            poolApiStyle = POOL_API_CKPOOL;
         }
         else {
             switch (Settings.PoolPort) {
@@ -505,8 +513,9 @@ pool_data getPoolData(void){
               String payload = http.getString();
               // Serial.println(payload);
               double temp;
-              if (poolApiStyle == POOL_API_HELIOS) {
-                // heliospool: { "bestever": N, "workers": N, "hashrate1hr": "1041G", ... }
+              if (poolApiStyle == POOL_API_CKPOOL) {
+                // ckpool-solo family (heliospool, nerdminers.org):
+                // { "bestever": N, "workers": N, "hashrate1hr": "1041G", ... }
                 // "workers" here is already a count, and hashrate1hr is a
                 // pre-formatted SI string (e.g. "1041G"), not a raw number.
                 StaticJsonDocument<300> filter;
