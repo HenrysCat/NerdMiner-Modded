@@ -2,6 +2,22 @@
 #ifndef MINING_API_H
 #define MINING_API_H
 
+#include <mutex>
+
+// Serializes classic-ESP32 (CONFIG_IDF_TARGET_ESP32) hardware SHA register
+// access (SHA_TEXT_BASE) against mbedTLS's own hardware-accelerated TLS
+// handshake hashing. Confirmed via a decoded crash backtrace: the classic
+// ESP32 SHA engine's esp_sha_lock_engine() locks *per algorithm type* (see
+// sha_parallel_engine.h), so our mining code locking SHA2_256 does NOT block
+// mbedTLS locking SHA2_384/512 for a TLS "Finished" message hash, even
+// though both share the same physical SHA_TEXT_BASE registers -- causing
+// either silently wrong hashes or a hard abort() inside sha_hal_read_digest()
+// depending on timing. Any code that touches SHA_TEXT_BASE directly (the
+// plain-C and pipelined-asm classic-ESP32 HW mining paths) must hold this
+// while doing so; any code that can trigger a TLS handshake with hardware
+// SHA active (e.g. the pool-stats HTTPS fetch) must hold it too.
+extern std::mutex g_hwShaMutex;
+
 // Mining
 #define MAX_NONCE_STEP  5000000U
 #define MAX_NONCE       25000000U

@@ -8,6 +8,7 @@
 #include <WiFiManager.h>
 
 #include "wManager.h"
+#include "webConfig.h"
 #include "monitor.h"
 #include "drivers/displays/display.h"
 #include "drivers/storage/SDCard.h"
@@ -126,6 +127,11 @@ void reset_configuration()
     resetStat();
     wm.resetSettings();
     ESP.restart();
+}
+
+void saveSettingsToFlash()
+{
+    nvMem.saveConfig(&Settings);
 }
 
 void init_WifiManager()
@@ -376,6 +382,9 @@ void init_WifiManager()
         Serial.println(Settings.Brightness);
         #endif
 
+        // Always-on LAN settings page -- lets the user change pool/wallet/etc.
+        // later without re-entering the device's own setup AP.
+        setup_webConfig();
     }
 
     // Lets deal with the user config values

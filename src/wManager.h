@@ -4,5 +4,6 @@
 void init_WifiManager();
 void wifiManagerProcess();
 void reset_configuration();
+void saveSettingsToFlash();
 
 #endif // _WMANAGER_H

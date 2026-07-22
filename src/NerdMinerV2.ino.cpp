@@ -9,6 +9,7 @@
 
 #include "mbedtls/md.h"
 #include "wManager.h"
+#include "webConfig.h"
 #include "mining.h"
 #include "monitor.h"
 #include "drivers/displays/display.h"
@@ -215,6 +216,7 @@ void loop() {
   touchHandler.isTouched();
 #endif
   wifiManagerProcess(); // avoid delays() in loop when non-blocking and other long running code
+  webConfigProcess();
 
   vTaskDelay(50 / portTICK_PERIOD_MS);
 }

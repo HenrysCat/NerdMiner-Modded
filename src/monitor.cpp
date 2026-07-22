@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include "mbedtls/md.h"
 #include "HTTPClient.h"
+#include <WiFiClientSecure.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <list>
@@ -36,6 +37,16 @@ String current_block = "793261";
 global_data gData;
 pool_data pData;
 String poolAPIUrl;
+
+// Different pools expose worker/difficulty stats through incompatible JSON
+// schemas. getPoolAPIUrl() sets this alongside poolAPIUrl so getPoolData()
+// knows how to parse whatever comes back.
+enum PoolApiStyle {
+  POOL_API_PUBLICPOOL = 0, // public-pool.io, nerdminers.org, sethforprivacy, solomining
+  POOL_API_HMPOOL,         // hmpool.io (HashedMax Unity Pool)
+  POOL_API_HELIOS,         // heliospool.com/.eu/.asia
+};
+int poolApiStyle = POOL_API_PUBLICPOOL;
 
 
 void setup_monitor(void){
@@ -406,10 +417,30 @@ coin_data getCoinData(unsigned long mElapsed)
 }
 
 String getPoolAPIUrl(void) {
+    poolApiStyle = POOL_API_PUBLICPOOL;
     poolAPIUrl = String(getPublicPool);
     if (Settings.PoolAddress == "public-pool.io") {
         poolAPIUrl = "https://public-pool.io:40557/api/client/";
-    } 
+    }
+    else if (Settings.PoolAddress.indexOf("hmpool.io") >= 0) {
+        // hmpool has regional stratum endpoints (btc.hmpool.io,
+        // eu.btc.hmpool.io, ...) but the stats API is centralized and
+        // region-agnostic — confirmed live against a wallet connected via
+        // the EU stratum endpoint. GET https://btc.hmpool.io/api/miner/<address>
+        poolAPIUrl = "https://btc.hmpool.io/api/miner/";
+        poolApiStyle = POOL_API_HMPOOL;
+    }
+    else if (Settings.PoolAddress.indexOf("heliospool.") >= 0) {
+        // From heliospool/HexOS's own helios-pool.service.ts:
+        // GET https://{coin}.heliospool.{region}/api/users/<address>
+        // Match their own regionFromStratumUrl() logic: substring match on
+        // the region, defaulting to the NA/"com" endpoint.
+        String region = "com";
+        if (Settings.PoolAddress.indexOf("heliospool.eu") >= 0) region = "eu";
+        else if (Settings.PoolAddress.indexOf("heliospool.asia") >= 0) region = "asia";
+        poolAPIUrl = "https://btc.heliospool." + region + "/api/users/";
+        poolApiStyle = POOL_API_HELIOS;
+    }
     else {
         if (Settings.PoolAddress == "pool.nerdminers.org") {
             poolAPIUrl = "https://pool.nerdminers.org/users/";
@@ -439,77 +470,147 @@ String getPoolAPIUrl(void) {
 pool_data getPoolData(void){
     //pool_data pData;    
     if((mPoolUpdate == 0) || (millis() - mPoolUpdate > UPDATE_POOL_min * 60 * 1000)){      
-        if (WiFi.status() != WL_CONNECTED) return pData;            
+        if (WiFi.status() != WL_CONNECTED) return pData;
         //Make first API call to get global hash and current difficulty
+        // Explicit, freshly-constructed WiFiClientSecure per call (rather
+        // than letting HTTPClient manage an internal one implicitly) --
+        // some pool servers' TLS 1.3 setups were consistently rejecting
+        // the 2nd+ call in a session with a fatal alert while the 1st
+        // always succeeded, which points at stale session/socket state
+        // being reused across calls. A fresh client + explicit stop()
+        // avoids that.
+        WiFiClientSecure client;
+        client.setInsecure();
         HTTPClient http;
-        http.setTimeout(10000);        
-        try {          
+        http.setTimeout(10000);
+        try {
           String btcWallet = Settings.BtcWallet;
           // Serial.println(btcWallet);
           if (btcWallet.indexOf(".")>0) btcWallet = btcWallet.substring(0,btcWallet.indexOf("."));
 #ifdef SCREEN_WORKERS_ENABLE
           Serial.println("Pool API : " + poolAPIUrl+btcWallet);
-          http.begin(poolAPIUrl+btcWallet);
+          http.begin(client, poolAPIUrl+btcWallet);
 #else
-          http.begin(String(getPublicPool)+btcWallet);
+          http.begin(client, String(getPublicPool)+btcWallet);
 #endif
+          // The TLS handshake inside GET() uses mbedTLS's own hardware SHA
+          // acceleration (SHA384/512), which does NOT block against mining's
+          // esp_sha_lock_engine(SHA2_256) -- confirmed via a crash backtrace
+          // showing abort() inside sha_hal_read_digest() when both ran
+          // concurrently. g_hwShaMutex closes that gap; see mining.h.
+          g_hwShaMutex.lock();
           int httpCode = http.GET();
+          g_hwShaMutex.unlock();
           if (httpCode == HTTP_CODE_OK) {
               String payload = http.getString();
               // Serial.println(payload);
-              StaticJsonDocument<300> filter;
-              filter["bestDifficulty"] = true;
-              filter["workersCount"] = true;
-              filter["workers"][0]["sessionId"] = true;
-              filter["workers"][0]["hashRate"] = true;
-              StaticJsonDocument<2048> doc;
-              deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-              //Serial.println(serializeJsonPretty(doc, Serial));
-              if (doc.containsKey("workersCount")) pData.workersCount = doc["workersCount"].as<int>();
-              const JsonArray& workers = doc["workers"].as<JsonArray>();
-              float totalhashs = 0;
-              for (const JsonObject& worker : workers) {
-                totalhashs += worker["hashRate"].as<double>();
-                /* Serial.print(worker["sessionId"].as<String>()+": ");
-                Serial.print(" - "+worker["hashRate"].as<String>()+": ");
-                Serial.println(totalhashs); */
-              }
-              char totalhashs_s[16] = {0};
-              suffix_string(totalhashs, totalhashs_s, 16, 0);
-              pData.workersHash = String(totalhashs_s);
-
               double temp;
-              if (doc.containsKey("bestDifficulty")) {
-              temp = doc["bestDifficulty"].as<double>();            
-              char best_diff_string[16] = {0};
-              suffix_string(temp, best_diff_string, 16, 0);
-              pData.bestDifficulty = String(best_diff_string);
+              if (poolApiStyle == POOL_API_HELIOS) {
+                // heliospool: { "bestever": N, "workers": N, "hashrate1hr": "1041G", ... }
+                // "workers" here is already a count, and hashrate1hr is a
+                // pre-formatted SI string (e.g. "1041G"), not a raw number.
+                StaticJsonDocument<300> filter;
+                filter["bestever"] = true;
+                filter["workers"] = true;
+                filter["hashrate1hr"] = true;
+                StaticJsonDocument<1024> doc;
+                deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+                if (doc.containsKey("workers")) pData.workersCount = doc["workers"].as<int>();
+                if (doc.containsKey("hashrate1hr")) pData.workersHash = doc["hashrate1hr"].as<String>();
+                if (doc.containsKey("bestever")) {
+                  temp = doc["bestever"].as<double>();
+                  char best_diff_string[16] = {0};
+                  suffix_string(temp, best_diff_string, 16, 0);
+                  pData.bestDifficulty = String(best_diff_string);
+                }
+                doc.clear();
+              } else if (poolApiStyle == POOL_API_HMPOOL) {
+                // hmpool: { "best_share_difficulty": N, "workers": [{"hashrate": N}, ...] }
+                // (hmpool's top-level "best_difficulty" is the current
+                // VarDiff target, not a best-ever share, so it's not used here.)
+                StaticJsonDocument<300> filter;
+                filter["best_share_difficulty"] = true;
+                filter["workers"][0]["hashrate"] = true;
+                StaticJsonDocument<2048> doc;
+                deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+                const JsonArray& workers = doc["workers"].as<JsonArray>();
+                pData.workersCount = workers.size();
+                float totalhashs = 0;
+                for (const JsonObject& worker : workers) {
+                  totalhashs += worker["hashrate"].as<double>();
+                }
+                char totalhashs_s[16] = {0};
+                suffix_string(totalhashs, totalhashs_s, 16, 0);
+                pData.workersHash = String(totalhashs_s);
+                if (doc.containsKey("best_share_difficulty")) {
+                  temp = doc["best_share_difficulty"].as<double>();
+                  char best_diff_string[16] = {0};
+                  suffix_string(temp, best_diff_string, 16, 0);
+                  pData.bestDifficulty = String(best_diff_string);
+                }
+                doc.clear();
+              } else {
+                // public-pool.io, nerdminers.org, sethforprivacy, solomining
+                StaticJsonDocument<300> filter;
+                filter["bestDifficulty"] = true;
+                filter["workersCount"] = true;
+                filter["workers"][0]["sessionId"] = true;
+                filter["workers"][0]["hashRate"] = true;
+                StaticJsonDocument<2048> doc;
+                deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+                //Serial.println(serializeJsonPretty(doc, Serial));
+                if (doc.containsKey("workersCount")) pData.workersCount = doc["workersCount"].as<int>();
+                const JsonArray& workers = doc["workers"].as<JsonArray>();
+                float totalhashs = 0;
+                for (const JsonObject& worker : workers) {
+                  totalhashs += worker["hashRate"].as<double>();
+                  /* Serial.print(worker["sessionId"].as<String>()+": ");
+                  Serial.print(" - "+worker["hashRate"].as<String>()+": ");
+                  Serial.println(totalhashs); */
+                }
+                char totalhashs_s[16] = {0};
+                suffix_string(totalhashs, totalhashs_s, 16, 0);
+                pData.workersHash = String(totalhashs_s);
+
+                if (doc.containsKey("bestDifficulty")) {
+                temp = doc["bestDifficulty"].as<double>();
+                char best_diff_string[16] = {0};
+                suffix_string(temp, best_diff_string, 16, 0);
+                pData.bestDifficulty = String(best_diff_string);
+                }
+                doc.clear();
               }
-              doc.clear();
               mPoolUpdate = millis();
-              Serial.println("\n####### Pool Data OK!");               
+              Serial.println("\n####### Pool Data OK!");
           } else {
-              Serial.println("\n####### Pool Data HTTP Error!");    
-              /* Serial.println(httpCode);
+              Serial.println("\n####### Pool Data HTTP Error!");
+              Serial.println(httpCode);
               String payload = http.getString();
-              Serial.println(payload); */
-              // mPoolUpdate = millis();
+              Serial.println(payload);
+              // Must still back off on failure, or a persistently-failing
+              // pool API gets hammered every ~2s instead of once a minute —
+              // enough to trip some pools' WAF/anti-abuse rate limiting and
+              // turn a transient failure into a permanent one.
+              mPoolUpdate = millis();
               pData.bestDifficulty = "P";
               pData.workersHash = "E";
               pData.workersCount = 0;
               http.end();
-              return pData; 
+              client.stop();
+              return pData;
           }
           http.end();
+          client.stop();
         } catch(...) {
-          Serial.println("####### Pool Error!");          
-          // mPoolUpdate = millis();
+          Serial.println("####### Pool Error!");
+          mPoolUpdate = millis();
           pData.bestDifficulty = "P";
           pData.workersHash = "Error";
           pData.workersCount = 0;
           http.end();
+          client.stop();
           return pData;
-        } 
+        }
     }
     return pData;
 }

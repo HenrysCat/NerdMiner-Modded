@@ -12,11 +12,19 @@
 // third (digest) block, relying on those registers still holding zero from
 // the second block's fill instead of rewriting them.
 //
-// Returns on candidate hit or mining-flag drop. The caller MUST treat a
-// "hit" as unverified and re-check it with the existing software
-// nerd_sha256d_baked() path before trusting/submitting it — this function
-// only checks the early-reject 16 bits inline and does not compute or
-// return the full digest.
+// Returns on candidate hit, iter_budget exhaustion, or mining-flag drop --
+// the latter two both signal "no hit" via *mining_flag so the caller can't
+// mistake a budget stop for a found candidate (important: without budget
+// enforcement this used to run ~65536 iterations on average before
+// returning, happily overshooting whatever nonce range the caller meant to
+// allocate for one job chunk and re-scanning ground another queued chunk
+// would cover later -- deterministically rediscovering, and resubmitting,
+// the same nonce twice instead of searching new ground).
+//
+// The caller MUST also treat a "hit" as unverified and re-check it with the
+// existing software nerd_sha256d_baked() path before trusting/submitting it
+// -- this function only checks the early-reject 16 bits inline and does not
+// compute or return the full digest.
 #ifdef PIPELINED_ASM_MINING
 
 #include <Arduino.h>
@@ -30,13 +38,15 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
     uint32_t *nonce_swapped_inout,       // IN: starting nonce_swapped. OUT: post-increment.
     volatile uint32_t *hash_count_low,   // attempt counter, incremented in asm
     volatile bool *mining_flag,          // poll: exit when *mining_flag == false
-    uint32_t iter_budget                 // unused, kept for call-site symmetry
+    uint32_t iter_budget                 // max iterations this call; enforced in asm (see a6)
 )
 {
-    const uint32_t pad32     = 0x80000000u;  // SHA padding bit
-    const uint32_t len_blk2  = 0x00000280u;  // 640 bits = first SHA input length (block1+block2)
-    const uint32_t len_blk3  = 0x00000100u;  // 256 bits = digest1 length for second SHA
-    (void)iter_budget;
+    // pad32 (0x80000000), len_blk2 (640) and len_blk3 (256) used to be
+    // passed in as register operands, but combined with the budget operand
+    // added below that's more distinct registers than Xtensa's window has
+    // room for ("can't find a register in class 'RL_REGS'"). They're
+    // computed inline from immediates instead (see a3 uses below) --  one
+    // fewer register per call is worth 1-2 extra cheap instructions.
 
     // Per-call peripheral kick to flush any leaked state from prior context
     // (TLS/mbedtls/other tasks sharing the engine). Uses the official
@@ -55,6 +65,8 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
         "addi     a5,  %[sb], 0x90  \n"     // a5 = SHA_256_START_REG
                                             //      a5+0 = START, a5+4 = CONT, a5+8 = LOAD, a5+12 = BUSY
         "movi.n   a8,  0            \n"     // a8 = 0 const for zero-stores
+        "or       a6,  %[budget], %[budget] \n"  // a6 = remaining-iterations budget (copy; %[budget]'s
+                                                  //      own register isn't safe to keep clobbering directly)
 
     "ml_start:                      \n"
         // ===== BLOCK-1 fill (16 stores TEXT[0..15] = header_swapped[0..15]) =====
@@ -87,8 +99,11 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
         "l32i     a3,  %[in], 72    \n"     "s32i.n   a3,  %[sb],  8    \n"
         // TEXT[3] = nonce_swapped (live in a2)
         "s32i.n   a2,  %[sb], 12    \n"
-        // TEXT[4] = 0x80 padding bit
-        "s32i.n   %[pad], %[sb], 16 \n"
+        // TEXT[4] = 0x80 padding bit (1 << 31, computed: movi immediate
+        // can't hold 0x80000000 directly)
+        "movi.n   a3, 1             \n"
+        "slli     a3, a3, 31        \n"
+        "s32i.n   a3, %[sb], 16     \n"
         // TEXT[5..14] = 0
         "s32i.n   a8,  %[sb], 20    \n"
         "s32i.n   a8,  %[sb], 24    \n"
@@ -100,8 +115,9 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
         "s32i.n   a8,  %[sb], 48    \n"
         "s32i.n   a8,  %[sb], 52    \n"
         "s32i.n   a8,  %[sb], 56    \n"
-        // TEXT[15] = 0x280 (input length 640 bits for first SHA)
-        "s32i.n   %[len2], %[sb], 60 \n"
+        // TEXT[15] = 640 (input length in bits for first SHA)
+        "movi     a3, 640           \n"
+        "s32i.n   a3, %[sb], 60     \n"
 
         // ===== WAIT block-1 done (BUSY=0 poll) =====
     "ml_w1:                         \n"
@@ -131,8 +147,11 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
 
         // BLOCK-3 fill: only TEXT[8] (pad 0x80) and TEXT[15] (256-bit length).
         // TEXT[0..7] = digest1 from LOAD1; TEXT[9..14] persist as 0 from block-2.
-        "s32i.n   %[pad],  %[sb], 32 \n"
-        "s32i.n   %[len3], %[sb], 60 \n"
+        "movi.n   a3, 1             \n"
+        "slli     a3, a3, 31        \n"
+        "s32i.n   a3, %[sb], 32     \n"
+        "movi     a3, 256           \n"
+        "s32i.n   a3, %[sb], 60     \n"
 
         // ===== START block-3 (second SHA over digest1) =====
         "movi.n   a4, 1             \n"
@@ -157,6 +176,21 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
         "l32i.n   a4, a5, 12        \n"
         "bnez.n   a4, ml_w5         \n"
 
+        // ===== Budget check: stop after iter_budget iterations even with
+        // no hit. Without this, a single call runs until the ~1/65536
+        // early-reject fires (tens of thousands of iterations), which can
+        // overshoot the nonce range the caller allocated for this job chunk
+        // and wander into a range another queued chunk will scan later --
+        // deterministically rediscovering (and resubmitting) the same
+        // nonce twice instead of searching new ground. On exhaustion this
+        // signals "no hit" via *mining_flag, distinctly from a real hit, so
+        // the caller can't mistake a budget stop for a found candidate. =====
+        "addi     a6, a6, -1        \n"
+        "bnez.n   a6, ml_budget_ok  \n"
+        "s8i      a8, %[flag], 0    \n"     // *mining_flag = 0 (false): signals "no hit" to caller
+        "j        ml_end            \n"
+    "ml_budget_ok:                  \n"
+
         // ===== Check mining flag (exit if mining stopped) =====
         "l8ui     a3, %[flag], 0    \n"
         "beqz.n   a3, ml_end        \n"
@@ -177,15 +211,14 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
           [hcnt]  "r"(hash_count_low),
           [nonce] "r"(nonce_swapped_inout),
           [flag]  "r"(mining_flag),
-          [pad]   "r"(pad32),
-          [len2]  "r"(len_blk2),
-          [len3]  "r"(len_blk3)
-        : "a2", "a3", "a4", "a5", "a8", "memory"
+          [budget] "r"(iter_budget)
+        : "a2", "a3", "a4", "a5", "a6", "a8", "memory"
     );
 
-    // Two exit paths from asm:
-    //   1. mining_flag became false -> l8ui beqz -> ml_end. Returns false.
-    //   2. l16ui != 0 (hit) -> fallthrough to ml_end. Returns true (mining_flag still true).
+    // Three exit paths from asm, all converging on ml_end:
+    //   1. Budget exhausted -> asm itself sets *mining_flag=0 -> returns false.
+    //   2. mining_flag became false (checked, not set, by the asm) -> false.
+    //   3. l16ui != 0 (hit) -> fallthrough to ml_end. Returns true.
     return *mining_flag;
 }
 
