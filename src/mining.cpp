@@ -18,10 +18,24 @@
 #include <map>
 #include "mbedtls/sha256.h"
 #include "i2c_master.h"
-
+ 
 //10 Jobs per second
 #define NONCE_PER_JOB_SW 4096
-#define NONCE_PER_JOB_HW 16*1024
+// Chunk size the classic-ESP32 pipelined path re-enters C for. Bumped 16x
+// from the original 16*1024: profiling against BitsyMiner (which never
+// returns to C mid-job at all) showed the redundant per-chunk SW midstate/
+// bake precompute plus periph_module_reset() was costing real throughput
+// at the old size, dwarfing the actual hash time of a 16384-nonce chunk
+// (~25ms at ~650KH/s). 256*1024 chunks take ~400ms, well inside the 900s
+// mining watchdog timeout, and job-change latency at that granularity is
+// imperceptible against how often stratum jobs actually change. Tried
+// pushing this to 1024*1024 (~1.5s/chunk) expecting a further gain from
+// amortizing the per-chunk cost even more; measured *worse* (~653KH/s
+// steady vs ~680KH/s here) instead, most likely because this pool's very
+// low share difficulty means job/share churn is frequent enough that the
+// longer stale-job latency at 1M costs more than the extra amortization
+// saves. 256*1024 is the empirically-best point found so far.
+#define NONCE_PER_JOB_HW 256*1024
 
 //#define I2C_SLAVE
 
@@ -1096,6 +1110,15 @@ void minerWorkerHw(void * task_id)
   // allocator, so it can't affect the SW worker or the non-pipelined HW path.
   uint32_t pipelined_swapped_cursor = 0;
   uint32_t pipelined_last_job_id = 0xFFFFFFFF;
+  // SW midstate/bake precompute (and the native-order header it's derived
+  // from) only depend on job->sha_buffer, which is invariant across every
+  // chunk pop of the same stratum job. Recomputing them on every chunk
+  // (previously: every 16384 nonces) was a redundant full SHA256 transform
+  // paid ~16x more often than necessary; cache and only redo on job change,
+  // keyed off the same pipelined_last_job_id used for the cursor above.
+  uint8_t pipelined_native_header_cache[80];
+  uint32_t pipelined_midstate_cache[8];
+  uint32_t pipelined_bake_cache[16];
   #endif
 
   while (1)
@@ -1129,27 +1152,29 @@ void minerWorkerHw(void * task_id)
       esp_sha_lock_engine(SHA2_256);
 #ifdef PIPELINED_ASM_MINING
       {
-        // Reverify setup: native-order header + fresh SW midstate/bake.
-        // job->midstate is HW-format and is never computed for classic
-        // ESP32 (only S2/S3/C3 do that), so it can't be reused here.
-        uint8_t native_header_pl[80];
-        for (int i = 0; i < 20; ++i)
-          ((uint32_t *)native_header_pl)[i] = __builtin_bswap32(((const uint32_t *)sha_buffer)[i]);
-        uint32_t sw_midstate_pl[8];
-        uint32_t sw_bake_pl[16];
-        nerd_mids(sw_midstate_pl, native_header_pl);
-        nerd_sha256_bake(sw_midstate_pl, native_header_pl + 64, sw_bake_pl);
-
+        // Reverify setup: native-order header + SW midstate/bake. job->midstate
+        // is HW-format and is never computed for classic ESP32 (only S2/S3/C3
+        // do that), so it can't be reused here -- but our own cache (below,
+        // keyed on job->id) can be.
         const uint32_t *header_words_pl = (const uint32_t *)sha_buffer;
         if (job->id != pipelined_last_job_id)
         {
-          // New stratum job: reseed from this job's native nonce_start.
-          // Any later chunk pop that's still the same job continues from
-          // pipelined_swapped_cursor instead, so chunks can never overlap
-          // in the space actually being searched.
+          // New stratum job: reseed from this job's native nonce_start, and
+          // recompute the SW midstate/bake cache. Any later chunk pop that's
+          // still the same job continues from pipelined_swapped_cursor and
+          // reuses the cached midstate/bake instead, so chunks can never
+          // overlap in the space actually being searched, and never redo a
+          // SHA256 transform whose input hasn't changed.
           pipelined_last_job_id = job->id;
           pipelined_swapped_cursor = __builtin_bswap32(job->nonce_start);
+          for (int i = 0; i < 20; ++i)
+            ((uint32_t *)pipelined_native_header_cache)[i] = __builtin_bswap32(((const uint32_t *)sha_buffer)[i]);
+          nerd_mids(pipelined_midstate_cache, pipelined_native_header_cache);
+          nerd_sha256_bake(pipelined_midstate_cache, pipelined_native_header_cache + 64, pipelined_bake_cache);
         }
+        uint8_t *native_header_pl = pipelined_native_header_cache;
+        uint32_t *sw_midstate_pl = pipelined_midstate_cache;
+        uint32_t *sw_bake_pl = pipelined_bake_cache;
         uint32_t nonce_swapped_pl = pipelined_swapped_cursor;
         uint32_t hash_count_low_pl = 0;
         volatile bool pipelined_active_pl = true;

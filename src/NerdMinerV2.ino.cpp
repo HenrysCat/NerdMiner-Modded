@@ -134,8 +134,13 @@ void setup()
   Serial.println("Initiating tasks...");
   static const char monitor_name[] = "(Monitor)";
   #if defined(CONFIG_IDF_TARGET_ESP32)
-  // Increased stack for ESP32 classic due to NVS operations  
-  BaseType_t res1 = xTaskCreatePinnedToCore(runMonitor, "Monitor", 9500, (void*)monitor_name, 5, NULL,1);
+  // Increased stack for ESP32 classic due to NVS operations
+  // Core 0, joining Stratum and the WiFi driver task (which ESP-IDF
+  // mandatorily pins to core 0 on classic ESP32) -- core 1 is reserved
+  // exclusively for the HW pipelined mining hot loop; see its
+  // xTaskCreatePinnedToCore call below for why sharing a core with it at
+  // any priority regresses hashrate.
+  BaseType_t res1 = xTaskCreatePinnedToCore(runMonitor, "Monitor", 9500, (void*)monitor_name, 5, NULL,0);
   #else
   BaseType_t res1 = xTaskCreatePinnedToCore(runMonitor, "Monitor", 10000, (void*)monitor_name, 5, NULL,1);
   #endif
@@ -144,10 +149,14 @@ void setup()
   static const char stratum_name[] = "(Stratum)";
  #if defined(CONFIG_IDF_TARGET_ESP32) && !defined(ESP32_2432S028R) && !defined(ESP32_2432S028_2USB)
   // Reduced stack for ESP32 classic to save memory
-  BaseType_t res2 = xTaskCreatePinnedToCore(runStratumWorker, "Stratum", 12000, (void*)stratum_name, 4, NULL,1);
+  // Core 0: see Monitor's task-creation comment above -- core 1 is
+  // reserved exclusively for the HW pipelined mining hot loop.
+  BaseType_t res2 = xTaskCreatePinnedToCore(runStratumWorker, "Stratum", 12000, (void*)stratum_name, 4, NULL,0);
  #elif defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
   // Free a little bit of the heap to the screen
-  BaseType_t res2 = xTaskCreatePinnedToCore(runStratumWorker, "Stratum", 13500, (void*)stratum_name, 4, NULL,1);
+  // Core 0: see Monitor's task-creation comment above -- core 1 is
+  // reserved exclusively for the HW pipelined mining hot loop.
+  BaseType_t res2 = xTaskCreatePinnedToCore(runStratumWorker, "Stratum", 13500, (void*)stratum_name, 4, NULL,0);
  #else
   BaseType_t res2 = xTaskCreatePinnedToCore(runStratumWorker, "Stratum", 15000, (void*)stratum_name, 4, NULL,1);
  #endif
@@ -162,7 +171,19 @@ void setup()
   TaskHandle_t minerTask1, minerTask2 = NULL;
   #ifdef HARDWARE_SHA265
     #if defined(CONFIG_IDF_TARGET_ESP32)
-    xTaskCreate(minerWorkerHw, "MinerHw-0", 3584, (void*)0, 3, &minerTask1); // Reduced for ESP32 classic
+    // Pinned to core 1, at a priority (19) above Monitor (core 1, prio 5)
+    // and Stratum (core 1, prio 4), so this hot asm loop always preempts
+    // them on the shared core instead of the reverse. Core 0 was tried
+    // first and measured WORSE (~610KH/s, more volatile) -- ESP32's WiFi
+    // driver task is mandatorily pinned to core 0 at a priority that can
+    // exceed ours, so core 0 trades "occasionally shares a core with
+    // Monitor/Stratum" for "permanently shares a core with the WiFi stack".
+    // Core 1 has no such mandatory tenant, so a high enough priority here
+    // is sufficient to fully isolate the loop from Monitor/Stratum without
+    // introducing WiFi contention. Matches BitsyMiner's equivalent hot loop
+    // (its own dedicated core, priority 19) -- but on core 1 as measured
+    // here rather than assuming its literal core number transfers over.
+    xTaskCreatePinnedToCore(minerWorkerHw, "MinerHw-0", 3584, (void*)0, 19, &minerTask1, 1); // Reduced for ESP32 classic
     //xTaskCreate(minerWorkerSw, "MinerSw-0", 5000, (void*)0, 1, &minerTask1); // Reduced for ESP32 classic
     #else
     xTaskCreate(minerWorkerHw, "MinerHw-0", 4096, (void*)0, 3, &minerTask1);
@@ -178,7 +199,10 @@ void setup()
 
 #if (SOC_CPU_CORES_NUM >= 2)
   #if defined(CONFIG_IDF_TARGET_ESP32)
-  xTaskCreate(minerWorkerSw, "MinerSw-1", 5000, (void*)1, 1, &minerTask2); // Reduced for ESP32 classic
+  // Low-priority background SW miner: pinned to core 0 (joining Monitor/
+  // Stratum there) so core 1 stays fully exclusive to the HW pipelined hot
+  // loop -- not even a low-priority task's occasional tick should share it.
+  xTaskCreatePinnedToCore(minerWorkerSw, "MinerSw-1", 5000, (void*)1, 1, &minerTask2, 0); // Reduced for ESP32 classic
   #else
   xTaskCreate(minerWorkerSw, "MinerSw-1", 6000, (void*)1, 1, &minerTask2);
   #endif
