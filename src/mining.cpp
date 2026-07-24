@@ -76,6 +76,13 @@ volatile uint32_t debugHashesSw[2] = {0, 0};
 volatile uint32_t debugPipelinedHits = 0;
 volatile uint32_t debugPipelinedHwSwMismatch = 0;
 volatile uint32_t debugPipelinedAccepted = 0;
+// Ground truth for mining integrity, independent of the hw-digest re-read
+// (which can be scrambled by benign register traffic after the asm's
+// early-reject decision was already made): a "real" hit is one whose SW
+// recompute confirms the low 16 result bits are zero. real/hits should be
+// ~100%; every point below that is hashes the HW computed wrong -- i.e.
+// silently lost shares.
+volatile uint32_t debugPipelinedRealHits = 0;
 
 volatile uint32_t shares; // increase if blockhash has 32 bits of zeroes
 volatile uint32_t valids; // increased if blockhash <= target
@@ -1239,7 +1246,13 @@ void minerWorkerHw(void * task_id)
 
           ((uint32_t *)(native_header_pl + 64 + 12))[0] = cand_native_pl;
           uint8_t sw_hash[32];
-          nerd_sha256d_baked(sw_midstate_pl, native_header_pl + 64, sw_bake_pl, sw_hash);
+          bool sw_confirms_pl = nerd_sha256d_baked(sw_midstate_pl, native_header_pl + 64, sw_bake_pl, sw_hash);
+          #ifdef DEBUG_MINING
+          if (sw_confirms_pl)
+            debugPipelinedRealHits++;
+          #else
+          (void)sw_confirms_pl;
+          #endif
 
           #ifdef DEBUG_MINING
           if (!hw_read_ok_dbg || memcmp(hw_hash_dbg, sw_hash, 32) != 0)
@@ -1462,8 +1475,8 @@ void runMonitor(void *name)
                       (curHw - lastHw) + (curSw0 - lastSw0) + (curSw1 - lastSw1));
         lastHw = curHw; lastSw0 = curSw0; lastSw1 = curSw1;
         #ifdef PIPELINED_ASM_MINING
-        Serial.printf("[PLDBG] hits=%u mismatch=%u accepted=%u\n",
-                      debugPipelinedHits, debugPipelinedHwSwMismatch, debugPipelinedAccepted);
+        Serial.printf("[PLDBG] hits=%u real=%u mismatch=%u accepted=%u\n",
+                      debugPipelinedHits, debugPipelinedRealHits, debugPipelinedHwSwMismatch, debugPipelinedAccepted);
         #endif
       }
       #endif

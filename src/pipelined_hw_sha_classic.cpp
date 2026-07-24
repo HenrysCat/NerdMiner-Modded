@@ -12,6 +12,16 @@
 // third (digest) block, relying on those registers still holding zero from
 // the second block's fill instead of rewriting them.
 //
+// Further refinements over the ported original: the hash counter lives in
+// a register (a7) and is stored back only at exit (the caller only reads it
+// after this function returns), the budget decrement / mining-flag load
+// hide in the block-3 compute window (register/DRAM work only -- safe),
+// and the serial block-1 fill batches its load/store pairs two-at-a-time.
+// Do NOT try to hide TEXT stores in engine-busy windows beyond what the
+// loop already does: every attempted variant measurably corrupted hashes
+// (silently losing shares); see the measured-corruption table at the
+// block-3 overlap comment inside the loop.
+//
 // Returns on candidate hit, iter_budget exhaustion, or mining-flag drop --
 // the latter two both signal "no hit" via *mining_flag so the caller can't
 // mistake a budget stop for a found candidate (important: without budget
@@ -67,25 +77,36 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
         "movi.n   a8,  0            \n"     // a8 = 0 const for zero-stores
         "or       a6,  %[budget], %[budget] \n"  // a6 = remaining-iterations budget (copy; %[budget]'s
                                                   //      own register isn't safe to keep clobbering directly)
+        "l32i.n   a7,  %[hcnt], 0   \n"     // a7 = hash counter, kept in-register for the whole call
+                                            //      (caller only reads *hash_count_low after we return;
+                                            //      stored back once at ml_end)
 
     "ml_start:                      \n"
-        // ===== BLOCK-1 fill (16 stores TEXT[0..15] = header_swapped[0..15]) =====
-        "l32i.n   a3,  %[in],  0    \n"     "s32i.n   a3,  %[sb],  0    \n"
-        "l32i.n   a3,  %[in],  4    \n"     "s32i.n   a3,  %[sb],  4    \n"
-        "l32i.n   a3,  %[in],  8    \n"     "s32i.n   a3,  %[sb],  8    \n"
-        "l32i.n   a3,  %[in], 12    \n"     "s32i.n   a3,  %[sb], 12    \n"
-        "l32i.n   a3,  %[in], 16    \n"     "s32i.n   a3,  %[sb], 16    \n"
-        "l32i.n   a3,  %[in], 20    \n"     "s32i.n   a3,  %[sb], 20    \n"
-        "l32i.n   a3,  %[in], 24    \n"     "s32i.n   a3,  %[sb], 24    \n"
-        "l32i.n   a3,  %[in], 28    \n"     "s32i.n   a3,  %[sb], 28    \n"
-        "l32i.n   a3,  %[in], 32    \n"     "s32i.n   a3,  %[sb], 32    \n"
-        "l32i.n   a3,  %[in], 36    \n"     "s32i.n   a3,  %[sb], 36    \n"
-        "l32i.n   a3,  %[in], 40    \n"     "s32i.n   a3,  %[sb], 40    \n"
-        "l32i.n   a3,  %[in], 44    \n"     "s32i.n   a3,  %[sb], 44    \n"
-        "l32i.n   a3,  %[in], 48    \n"     "s32i.n   a3,  %[sb], 48    \n"
-        "l32i.n   a3,  %[in], 52    \n"     "s32i.n   a3,  %[sb], 52    \n"
-        "l32i.n   a3,  %[in], 56    \n"     "s32i.n   a3,  %[sb], 56    \n"
-        "l32i.n   a3,  %[in], 60    \n"     "s32i.n   a3,  %[sb], 60    \n"
+        // ===== BLOCK-1 fill (16 stores TEXT[0..15] = header_swapped[0..15]).
+        // This MUST stay on the serial path: hardware measurement (see the
+        // integrity comment at the block-3 overlap below) shows any TEXT
+        // store issued while the engine is BUSY -- compute OR load -- can
+        // corrupt hashes or the digest transfer. Load/store pairs are
+        // batched two-at-a-time (a3+a4) so the second load's latency hides
+        // behind the first store instead of serializing with it. a4 is free
+        // here: the mining-flag preload it carries is consumed in the exit
+        // checks before the loop re-enters. =====
+        "l32i.n   a3,  %[in],  0    \n"     "l32i.n   a4,  %[in],  4    \n"
+        "s32i.n   a3,  %[sb],  0    \n"     "s32i.n   a4,  %[sb],  4    \n"
+        "l32i.n   a3,  %[in],  8    \n"     "l32i.n   a4,  %[in], 12    \n"
+        "s32i.n   a3,  %[sb],  8    \n"     "s32i.n   a4,  %[sb], 12    \n"
+        "l32i.n   a3,  %[in], 16    \n"     "l32i.n   a4,  %[in], 20    \n"
+        "s32i.n   a3,  %[sb], 16    \n"     "s32i.n   a4,  %[sb], 20    \n"
+        "l32i.n   a3,  %[in], 24    \n"     "l32i.n   a4,  %[in], 28    \n"
+        "s32i.n   a3,  %[sb], 24    \n"     "s32i.n   a4,  %[sb], 28    \n"
+        "l32i.n   a3,  %[in], 32    \n"     "l32i.n   a4,  %[in], 36    \n"
+        "s32i.n   a3,  %[sb], 32    \n"     "s32i.n   a4,  %[sb], 36    \n"
+        "l32i.n   a3,  %[in], 40    \n"     "l32i.n   a4,  %[in], 44    \n"
+        "s32i.n   a3,  %[sb], 40    \n"     "s32i.n   a4,  %[sb], 44    \n"
+        "l32i.n   a3,  %[in], 48    \n"     "l32i.n   a4,  %[in], 52    \n"
+        "s32i.n   a3,  %[sb], 48    \n"     "s32i.n   a4,  %[sb], 52    \n"
+        "l32i.n   a3,  %[in], 56    \n"     "l32i.n   a4,  %[in], 60    \n"
+        "s32i.n   a3,  %[sb], 56    \n"     "s32i.n   a4,  %[sb], 60    \n"
 
         // START block-1
         "movi.n   a3, 1             \n"
@@ -130,20 +151,20 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
         "memw                       \n"
 
     "ml_w2:                         \n"
-        "l32i.n   a4, a5, 12        \n"
-        "bnez.n   a4, ml_w2         \n"
+        "l32i.n   a3, a5, 12        \n"
+        "bnez.n   a3, ml_w2         \n"
 
         // ===== LOAD1 (digest1 -> TEXT[0..7]; preserves TEXT[8..15]) =====
-        "movi.n   a4, 1             \n"
-        "s32i.n   a4, a5, 8         \n"
+        "movi.n   a3, 1             \n"
+        "s32i.n   a3, a5, 8         \n"
         "memw                       \n"
 
         // OVERLAP: increment nonce during LOAD1
         "addi.n   a2, a2, 1         \n"
 
     "ml_w3:                         \n"
-        "l32i.n   a4, a5, 12        \n"
-        "bnez.n   a4, ml_w3         \n"
+        "l32i.n   a3, a5, 12        \n"
+        "bnez.n   a3, ml_w3         \n"
 
         // BLOCK-3 fill: only TEXT[8] (pad 0x80) and TEXT[15] (256-bit length).
         // TEXT[0..7] = digest1 from LOAD1; TEXT[9..14] persist as 0 from block-2.
@@ -154,18 +175,36 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
         "s32i.n   a3, %[sb], 60     \n"
 
         // ===== START block-3 (second SHA over digest1) =====
-        "movi.n   a4, 1             \n"
-        "s32i.n   a4, a5, 0         \n"
+        "movi.n   a3, 1             \n"
+        "s32i.n   a3, a5, 0         \n"
         "memw                       \n"
 
-        // OVERLAP: hash counter increment during block-3 compute
-        "l32i.n   a3, %[hcnt], 0    \n"
-        "addi.n   a3, a3, 1         \n"
-        "s32i.n   a3, %[hcnt], 0    \n"
+        // OVERLAP (block-3 compute window): hash counter / budget / flag
+        // work. Register/DRAM-only -- deliberately NO TEXT stores here or
+        // in any other engine-BUSY window beyond what the original loop
+        // already did. Measured on hardware (PLDBG counters, 150s runs
+        // each), attempts to hide the next block-1's TEXT[8..15] fill in
+        // busy windows all corrupted hashes:
+        //   - right after START-3:            mismatch/hits = 119/1593 (~7.5%)
+        //   - after a 19-cycle delay:         mismatch/hits = 181/1671 (~10.8%)
+        //   - during the LOAD2 window:        real-hits/hits = 74/1554 (~5%!!)
+        //   - baseline (no busy-window fill): mismatch 0/1431
+        // Explanation consistent with all four: the engine reads TEXT word
+        // t as compute round t reaches it, and a LOAD's H->TEXT transfer is
+        // also disruptable mid-flight. The long-standing block-2 fill
+        // during block-1 compute survives only because it starts at TEXT[0]
+        // *behind* the engine's read pointer and never overtakes it; a fill
+        // starting mid-array at TEXT[8] starts *ahead* of the pointer and
+        // loses the race on DPORT bus jitter. Acceptance bar for touching
+        // any of this scheduling: re-run with DEBUG_MINING and require
+        // mismatch=0 AND real==hits.
+        "addi.n   a7, a7, 1         \n"     // hash counter (in-register)
+        "addi     a6, a6, -1        \n"     // budget decrement (tested after w5)
+        "l8ui     a4, %[flag], 0    \n"     // a4 = *mining_flag preload (tested after w5)
 
     "ml_w4:                         \n"
-        "l32i.n   a4, a5, 12        \n"
-        "bnez.n   a4, ml_w4         \n"
+        "l32i.n   a3, a5, 12        \n"
+        "bnez.n   a3, ml_w4         \n"
 
         // ===== LOAD2 final (digest2 -> TEXT[0..7]) =====
         "movi.n   a3, 1             \n"
@@ -173,8 +212,8 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
         "memw                       \n"
 
     "ml_w5:                         \n"
-        "l32i.n   a4, a5, 12        \n"
-        "bnez.n   a4, ml_w5         \n"
+        "l32i.n   a3, a5, 12        \n"
+        "bnez.n   a3, ml_w5         \n"
 
         // ===== Budget check: stop after iter_budget iterations even with
         // no hit. Without this, a single call runs until the ~1/65536
@@ -184,16 +223,15 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
         // deterministically rediscovering (and resubmitting) the same
         // nonce twice instead of searching new ground. On exhaustion this
         // signals "no hit" via *mining_flag, distinctly from a real hit, so
-        // the caller can't mistake a budget stop for a found candidate. =====
-        "addi     a6, a6, -1        \n"
+        // the caller can't mistake a budget stop for a found candidate.
+        // (Decrement itself happened in the block-3 overlap window above.) =====
         "bnez.n   a6, ml_budget_ok  \n"
         "s8i      a8, %[flag], 0    \n"     // *mining_flag = 0 (false): signals "no hit" to caller
         "j        ml_end            \n"
     "ml_budget_ok:                  \n"
 
-        // ===== Check mining flag (exit if mining stopped) =====
-        "l8ui     a3, %[flag], 0    \n"
-        "beqz.n   a3, ml_end        \n"
+        // ===== Check mining flag (preloaded into a4 in the w2 window) =====
+        "beqz.n   a4, ml_end        \n"
 
         // EARLY REJECT: low 16 bits of TEXT[7] == 0 = HIT, != 0 = MISS.
         "l16ui    a3, %[sb], 28     \n"
@@ -204,6 +242,7 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
 
     "ml_end:                        \n"
         "s32i.n   a2, %[nonce], 0   \n"     // save current nonce_swapped (post-increment if hit)
+        "s32i.n   a7, %[hcnt], 0    \n"     // write back in-register hash counter
 
         :
         : [sb]    "r"(sha_base),
@@ -212,7 +251,7 @@ extern "C" IRAM_ATTR bool pipelined_hw_mine_classic(
           [nonce] "r"(nonce_swapped_inout),
           [flag]  "r"(mining_flag),
           [budget] "r"(iter_budget)
-        : "a2", "a3", "a4", "a5", "a6", "a8", "memory"
+        : "a2", "a3", "a4", "a5", "a6", "a7", "a8", "memory"
     );
 
     // Three exit paths from asm, all converging on ml_end:
