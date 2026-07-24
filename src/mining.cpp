@@ -18,6 +18,7 @@
 #include <map>
 #include "mbedtls/sha256.h"
 #include "i2c_master.h"
+#include <esp_timer.h>
  
 //10 Jobs per second
 #define NONCE_PER_JOB_SW 4096
@@ -83,6 +84,22 @@ volatile uint32_t debugPipelinedAccepted = 0;
 // ~100%; every point below that is hashes the HW computed wrong -- i.e.
 // silently lost shares.
 volatile uint32_t debugPipelinedRealHits = 0;
+// Diagnostic for the classic-ESP32 chunk-boundary "dead time" theory: total
+// microseconds spent between finishing one HW job chunk (mutex released)
+// and starting the next (mutex reacquired, first candidate about to hash),
+// and how many such gaps were measured. debugChunkGapUs / debugChunkCount
+// is the average per-chunk overhead outside the hot loop -- job-queue pop,
+// shared_ptr alloc/free, memcpy, engine lock/unlock, and (rarely) blocking
+// on g_hwShaMutex against a concurrent pool-stats HTTPS/TLS fetch.
+volatile uint32_t debugChunkGapUs = 0;
+volatile uint32_t debugChunkCount = 0;
+// Same idea, but for the cost INSIDE a chunk: every early-reject candidate
+// (~1/65536 nonces) exits the asm entirely, and the SHA hardware sits
+// completely idle while the CPU does a full SW SHA256d reverify + debug
+// bookkeeping + periph_module_reset(). debugChunkGapUs above can't see this
+// -- it only spans time BETWEEN chunks, and a hit happens INSIDE one.
+volatile uint32_t debugHitOverheadUs = 0;
+volatile uint32_t debugHitOverheadCount = 0;
 
 volatile uint32_t shares; // increase if blockhash has 32 bits of zeroes
 volatile uint32_t valids; // increased if blockhash <= target
@@ -1128,6 +1145,10 @@ void minerWorkerHw(void * task_id)
   uint32_t pipelined_bake_cache[16];
   #endif
 
+  #ifdef DEBUG_MINING
+  int64_t debugChunkEndUs = 0;
+  #endif
+
   while (1)
   {
     {
@@ -1147,6 +1168,22 @@ void minerWorkerHw(void * task_id)
     }
     if (job)
     {
+      #ifdef DEBUG_MINING
+      // Gap since the PREVIOUS chunk released g_hwShaMutex, i.e. everything
+      // outside the hot loop: job-queue pop above, and (below) shared_ptr
+      // alloc + memcpy + acquiring g_hwShaMutex/esp_sha_lock_engine again.
+      // Skip the very first chunk (debugChunkEndUs still 0 -- no prior
+      // chunk to measure a gap from).
+      if (debugChunkEndUs != 0)
+      {
+        int64_t gap = esp_timer_get_time() - debugChunkEndUs;
+        if (gap > 0 && gap < 10000000) // sanity bound only; the HW queue is kept 4 chunks deep so it shouldn't run dry
+        {
+          debugChunkGapUs += (uint32_t)gap;
+          debugChunkCount++;
+        }
+      }
+      #endif
       result = std::make_shared<JobResult>();
       result->id = job->id;
       result->nonce = 0xFFFFFFFF;
@@ -1230,6 +1267,7 @@ void minerWorkerHw(void * task_id)
             break;
 
           #ifdef DEBUG_MINING
+          int64_t hitOverheadStartUs = esp_timer_get_time();
           debugPipelinedHits++;
           // Read the hardware's own digest for this candidate BEFORE it
           // gets clobbered by reinit(), to check the SW reverify below
@@ -1284,6 +1322,10 @@ void minerWorkerHw(void * task_id)
           // Drop any sticky internal H state left by the asm sequence so
           // the next call starts from a clean SHA engine.
           pipelined_hw_mine_classic_reinit();
+          #ifdef DEBUG_MINING
+          debugHitOverheadUs += (uint32_t)(esp_timer_get_time() - hitOverheadStartUs);
+          debugHitOverheadCount++;
+          #endif
         }
         // Persist where the search got to so the NEXT chunk pop of this
         // same stratum job continues from here instead of re-deriving a
@@ -1348,6 +1390,9 @@ void minerWorkerHw(void * task_id)
 #endif // PIPELINED_ASM_MINING
       esp_sha_unlock_engine(SHA2_256);
       g_hwShaMutex.unlock();
+      #ifdef DEBUG_MINING
+      debugChunkEndUs = esp_timer_get_time();
+      #endif
     } else
       vTaskDelay(2 / portTICK_PERIOD_MS);
 
@@ -1477,6 +1522,22 @@ void runMonitor(void *name)
         #ifdef PIPELINED_ASM_MINING
         Serial.printf("[PLDBG] hits=%u real=%u mismatch=%u accepted=%u\n",
                       debugPipelinedHits, debugPipelinedRealHits, debugPipelinedHwSwMismatch, debugPipelinedAccepted);
+        {
+          static uint32_t lastGapUs = 0, lastGapCount = 0;
+          uint32_t curGapUs = debugChunkGapUs, curGapCount = debugChunkCount;
+          uint32_t dGapUs = curGapUs - lastGapUs, dGapCount = curGapCount - lastGapCount;
+          Serial.printf("[CHUNKGAP] chunks=%u totalGapUs=%u avgGapUs=%u\n",
+                        dGapCount, dGapUs, dGapCount ? (dGapUs / dGapCount) : 0);
+          lastGapUs = curGapUs; lastGapCount = curGapCount;
+        }
+        {
+          static uint32_t lastHitUs = 0, lastHitCount = 0;
+          uint32_t curHitUs = debugHitOverheadUs, curHitCount = debugHitOverheadCount;
+          uint32_t dHitUs = curHitUs - lastHitUs, dHitCount = curHitCount - lastHitCount;
+          Serial.printf("[HITOVERHEAD] hits=%u totalUs=%u avgUs=%u\n",
+                        dHitCount, dHitUs, dHitCount ? (dHitUs / dHitCount) : 0);
+          lastHitUs = curHitUs; lastHitCount = curHitCount;
+        }
         #endif
       }
       #endif
