@@ -420,6 +420,34 @@ coin_data getCoinData(unsigned long mElapsed)
   return data;
 }
 
+// Which heliospool region server our stratum connection landed on. The stats
+// API is per-region and a user only has live data on the server they mine to.
+// The generic btc.heliospool.com hostname is a geo load balancer, so when the
+// hostname doesn't name a region, match its resolved IP against the regional
+// stratum hostnames. Only cached once resolved (DNS needs WiFi up).
+static const char* const HELIOS_REGIONS[] = {"eu-west", "us-west", "ca-east", "au-south"};
+static String heliosRegion;
+String getHeliosRegion(void) {
+    if (heliosRegion.length()) return heliosRegion;
+    const String& host = Settings.PoolAddress;
+    for (const char* r : HELIOS_REGIONS) {
+        if (host.indexOf(r) >= 0) return heliosRegion = r;
+    }
+    if (host.indexOf("heliospool.eu") >= 0) return heliosRegion = "eu-west";
+    if (host.indexOf("heliospool.asia") >= 0) return heliosRegion = "au-south";
+    IPAddress poolIp;
+    if (WiFi.status() == WL_CONNECTED && WiFi.hostByName(host.c_str(), poolIp)) {
+        for (const char* r : HELIOS_REGIONS) {
+            IPAddress regionIp;
+            if (WiFi.hostByName((String("btc-") + r + ".heliospool.com").c_str(), regionIp) && regionIp == poolIp) {
+                Serial.printf("heliospool region: %s\n", r);
+                return heliosRegion = r;
+            }
+        }
+    }
+    return "eu-west"; // best guess; not cached so a later call can retry the lookup
+}
+
 String getPoolAPIUrl(void) {
     poolApiStyle = POOL_API_PUBLICPOOL;
     poolAPIUrl = String(getPublicPool);
@@ -435,14 +463,11 @@ String getPoolAPIUrl(void) {
         poolApiStyle = POOL_API_HMPOOL;
     }
     else if (Settings.PoolAddress.indexOf("heliospool.") >= 0) {
-        // From heliospool/HexOS's own helios-pool.service.ts:
-        // GET https://{coin}.heliospool.{region}/api/users/<address>
-        // Match their own regionFromStratumUrl() logic: substring match on
-        // the region, defaulting to the NA/"com" endpoint.
-        String region = "com";
-        if (Settings.PoolAddress.indexOf("heliospool.eu") >= 0) region = "eu";
-        else if (Settings.PoolAddress.indexOf("heliospool.asia") >= 0) region = "asia";
-        poolAPIUrl = "https://btc.heliospool." + region + "/api/users/";
+        // heliospool.com/heliospool-api: each region's server publishes its
+        // own stats at https://api-{coin}-{region}.heliospool.com/users/<address>
+        // (the old btc.heliospool.{com,eu,asia}/api/users path is gone -- those
+        // hosts are now stratum-only and 443 just times out).
+        poolAPIUrl = "https://api-btc-" + getHeliosRegion() + ".heliospool.com/users/";
         poolApiStyle = POOL_API_CKPOOL;
     }
     else {
@@ -496,6 +521,10 @@ pool_data getPoolData(void){
           // Serial.println(btcWallet);
           if (btcWallet.indexOf(".")>0) btcWallet = btcWallet.substring(0,btcWallet.indexOf("."));
 #ifdef SCREEN_WORKERS_ENABLE
+          // setup_monitor() may have run before WiFi was up, leaving heliospool's
+          // region unresolved; retry until it sticks.
+          if (poolApiStyle == POOL_API_CKPOOL && Settings.PoolAddress.indexOf("heliospool.") >= 0 && heliosRegion.isEmpty())
+              poolAPIUrl = getPoolAPIUrl();
           Serial.println("Pool API : " + poolAPIUrl+btcWallet);
           http.begin(client, poolAPIUrl+btcWallet);
 #else
