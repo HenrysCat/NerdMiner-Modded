@@ -25,6 +25,17 @@ Original NerdMiner_v2 project https://github.com/BitMaker-hub/NerdMiner_v2
 - **BTC price in your currency** – choose which fiat currency the BTC price is shown in from the web settings page.
 - **Improved web settings page** – the settings page stays reachable while mining, and now also has options for display flip (USB on the left), colour inversion, brightness and currency. After saving it waits for the device to restart and returns to the settings page automatically.
 
+### Why this hashrate is realistic
+
+You will see miners quoting much higher numbers for the same class of hardware. The ~670 KH/s here is deliberately a conservative, honest figure, and it is close to the practical ceiling of the classic ESP32:
+
+- **Hardware limit** – the classic ESP32's SHA engine can't be loaded with an external midstate, so every nonce costs three hardware hash blocks plus two engine loads. That caps what the chip can physically do, and ~670 KH/s is already near it.
+- **Only valid hashes are counted** – the shown rate is measured from the miner's real work, and any change to the hashing code has to pass an integrity check: zero hash mismatches against a reference, and every share the miner reports must match a real hit. A hashrate counter on its own can look 5-8% faster after an optimisation while the miner is quietly producing *fewer* valid shares, because corrupted hashes are still counted. Those numbers look good but are not mining progress.
+- **The rate is the rate it actually mines at** – it's the sustained average over a long run, not a short burst or a best-case peak.
+- **Chip class matters** – figures around 1 MH/s come from newer ESP32-S3-class silicon, which is simply not achievable on a classic ESP32 like the CYD.
+
+If a number sounds too good for this chip, check whether the shares it finds actually keep up with it.
+
 For the other features, supported boards, flashing and configuration, the original documentation below still applies.
 
 ## Requirements
