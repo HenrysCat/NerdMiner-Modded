@@ -97,7 +97,9 @@ Every time an stratum job notification is received miner update its current work
 
 ### Flash firmware
 
-> **Note for this mod:** the online flasher and the prebuilt binaries referenced below come from the original project and will install the **original** firmware, not the modded one. To run NerdMiner Modded, build and flash this repository with PlatformIO, e.g. `pio run -e ESP32-2432S028R -t upload`.
+> **Flashing NerdMiner Modded:** use the web flasher at **https://henryscat.github.io/NerdMiner-Modded/** (Chrome, Edge or Brave). It offers a *full install* (factory image: bootloader, partition table and firmware, for a first flash) and a *firmware-only update* (keeps your settings). You can also build and flash this repository with PlatformIO, e.g. `pio run -e ESP32-2432S028R -t upload`.
+>
+> The online flasher and the prebuilt binaries in the sections below come from the **original** project and will install the original firmware, not the modded one.
 
 #### microMiners Flashtool [Recommended]
 
