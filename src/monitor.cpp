@@ -11,6 +11,7 @@
 #include "monitor.h"
 #include "drivers/storage/storage.h"
 #include "drivers/devices/device.h"
+#include "currency.h"
 
 extern uint32_t templates;
 extern uint32_t hashes;
@@ -69,6 +70,11 @@ void setup_monitor(void){
 #endif
 }
 
+// Every HTTPS fetch below does its TLS handshake through mbedTLS's hardware
+// SHA, which must not overlap the miner's use of the SHA engine -- the same
+// reason getPoolData() takes g_hwShaMutex (see mining.h). Without it these
+// requests all fail with -1 (TLS connect) while mining runs, leaving price,
+// block height, fees, difficulty and network hashrate empty.
 unsigned long mGlobalUpdate =0;
 
 void updateGlobalData(void){
@@ -82,7 +88,8 @@ void updateGlobalData(void){
         http.setTimeout(10000);
         try {
         http.begin(getGlobalHash);
-        int httpCode = http.GET();
+        int httpCode;
+        { std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
 
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
@@ -107,7 +114,7 @@ void updateGlobalData(void){
       
         //Make third API call to get fees
         http.begin(getFees);
-        httpCode = http.GET();
+        { std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
 
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
@@ -147,7 +154,8 @@ String getBlockHeight(void){
         http.setTimeout(10000);
         try {
         http.begin(getHeightAPI);
-        int httpCode = http.GET();
+        int httpCode;
+        { std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
 
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
@@ -170,22 +178,24 @@ String getBlockHeight(void){
 unsigned long mBTCUpdate = 0;
 
 String getBTCprice(void){
-    
+    const CurrencyInfo &cur = currencyFor(Settings.Currency);
+    static char price_buffer[24];
+
     if((mBTCUpdate == 0) || (millis() - mBTCUpdate > UPDATE_BTC_min * 60 * 1000)){
-    
+
         if (WiFi.status() != WL_CONNECTED) {
-            static char price_buffer[16];
-            snprintf(price_buffer, sizeof(price_buffer), "$%u", bitcoin_price);
+            snprintf(price_buffer, sizeof(price_buffer), "%s%u", cur.prefix, bitcoin_price);
             return String(price_buffer);
         }
-        
+
         HTTPClient http;
         http.setTimeout(10000);
         bool priceUpdated = false;
 
         try {
-        http.begin(getBTCAPI);
-        int httpCode = http.GET();
+        http.begin(String(getBTCAPI) + cur.code);
+        int httpCode;
+        { std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
 
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
@@ -193,8 +203,8 @@ String getBTCprice(void){
             StaticJsonDocument<1024> doc;
             deserializeJson(doc, payload);
           
-            if (doc.containsKey("bitcoin") && doc["bitcoin"].containsKey("usd")) {
-                bitcoin_price = doc["bitcoin"]["usd"];
+            if (doc.containsKey("bitcoin") && doc["bitcoin"].containsKey(cur.code)) {
+                bitcoin_price = doc["bitcoin"][cur.code];
             }
 
             doc.clear();
@@ -209,8 +219,7 @@ String getBTCprice(void){
         }
     }  
   
-  static char price_buffer[16];
-  snprintf(price_buffer, sizeof(price_buffer), "$%u", bitcoin_price);
+  snprintf(price_buffer, sizeof(price_buffer), "%s%u", cur.prefix, bitcoin_price);
   return String(price_buffer);
 }
 

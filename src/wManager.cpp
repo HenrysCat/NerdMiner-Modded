@@ -257,9 +257,17 @@ void init_WifiManager()
   }
   WiFiManagerParameter invertColors("inverColors", "Invert Display Colors (if the colors looks weird)", "T", 2, checkboxParams2, WFM_LABEL_AFTER);
   wm.addParameter(&invertColors);
+  const bool flipAtBoot = Settings.flipDisplay;
+  char checkboxParams3[24] = "type=\"checkbox\"";
+  if (Settings.flipDisplay)
+  {
+    strcat(checkboxParams3, " checked");
+  }
+  WiFiManagerParameter flipDisplay("flipDisplay", "Flip display (USB on the left instead of the right)", "T", 2, checkboxParams3, WFM_LABEL_AFTER);
+  wm.addParameter(&flipDisplay);
   #endif
   #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
-    char brightnessConvValue[2];
+    char brightnessConvValue[8]; // up to "255" + NUL; was [2], overflowed on sprintf
     sprintf(brightnessConvValue, "%d", Settings.Brightness);
     // Text box (Number) - 3 characters maximum
     WiFiManagerParameter brightness_text_box_num("Brightness", "Screen backlight Duty Cycle (0-255)", brightnessConvValue, 3);
@@ -289,6 +297,7 @@ void init_WifiManager()
             Settings.saveStats = (strncmp(save_stats_to_nvs.getValue(), "T", 1) == 0);
             #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
                 Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
+                Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
             #endif
             #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
                 Settings.Brightness = atoi(brightness_text_box_num.getValue());
@@ -322,6 +331,7 @@ void init_WifiManager()
                 Settings.saveStats = (strncmp(save_stats_to_nvs.getValue(), "T", 1) == 0);
                 #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
                 Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
+                Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
                 #endif
                 #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
                 Settings.Brightness = atoi(brightness_text_box_num.getValue());
@@ -372,6 +382,7 @@ void init_WifiManager()
 
         #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
         Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
+        if (shouldSaveConfig) Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
         Serial.print("Invert Colors: ");
         Serial.println(Settings.invertColors);        
         #endif
@@ -417,6 +428,7 @@ void init_WifiManager()
 
     #ifdef ESP32_2432S028R
     Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
+    if (shouldSaveConfig) Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
     Serial.print("Invert Colors: ");
     Serial.println(Settings.invertColors);
     #endif
@@ -430,6 +442,7 @@ void init_WifiManager()
         #endif
         #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
         if (Settings.Brightness != 250) ESP.restart();
+        if (Settings.flipDisplay != flipAtBoot) ESP.restart(); // rotation is applied at display init
         #endif
     }
 }

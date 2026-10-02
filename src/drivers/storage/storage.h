@@ -20,6 +20,8 @@
 #define DEFAULT_SAVESTATS	false
 #define DEFAULT_INVERTCOLORS	false
 #define DEFAULT_BRIGHTNESS	250
+#define DEFAULT_FLIPDISPLAY	false
+#define DEFAULT_CURRENCY	"usd"
 
 // JSON config files
 #define JSON_CONFIG_FILE	"/config.json"
@@ -45,6 +47,8 @@
 #define JSON_SPIFFS_KEY_STATS2NV	"saveStatsToNVS"
 #define JSON_SPIFFS_KEY_INVCOLOR	"invertColors"
 #define JSON_SPIFFS_KEY_BRIGHTNESS	"Brightness"
+#define JSON_SPIFFS_KEY_FLIPDISPLAY	"flipDisplay"
+#define JSON_SPIFFS_KEY_CURRENCY	"currency"
 
 // settings
 struct TSettings
@@ -59,6 +63,8 @@ struct TSettings
 	bool saveStats{ DEFAULT_SAVESTATS };
 	bool invertColors{ DEFAULT_INVERTCOLORS };
 	int Brightness{ DEFAULT_BRIGHTNESS };
+	bool flipDisplay{ DEFAULT_FLIPDISPLAY };	// rotate display 180 degrees (USB on the left)
+	String Currency{ DEFAULT_CURRENCY };	// fiat currency for the BTC price (CoinGecko vs_currency code)
 };
 
 #endif // _STORAGE_H_

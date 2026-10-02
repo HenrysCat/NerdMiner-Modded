@@ -4,6 +4,7 @@
 #include "webConfig.h"
 #include "wManager.h"
 #include "drivers/storage/storage.h"
+#include "currency.h"
 
 extern TSettings Settings;
 
@@ -44,13 +45,13 @@ static void handleRoot()
     return;
 
   String page;
-  page.reserve(2600);
+  page.reserve(3600);
   page += F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
              "<meta name='viewport' content='width=device-width, initial-scale=1'>"
              "<title>NerdMiner Settings</title>"
              "<style>body{font-family:sans-serif;max-width:480px;margin:2em auto;padding:0 1em}"
              "label{display:block;margin-top:1em;font-weight:bold}"
-             "input[type=text],input[type=number],input[type=password]{width:100%;padding:.4em;box-sizing:border-box}"
+             "input[type=text],input[type=number],input[type=password],select{width:100%;padding:.4em;box-sizing:border-box}"
              "input[type=submit]{margin-top:1.5em;padding:.6em 1.2em}</style></head><body>"
              "<h2>NerdMiner Settings</h2>"
              "<form method='POST' action='/save'>");
@@ -60,9 +61,19 @@ static void handleRoot()
   page += "<label>Pool Password (optional)</label><input type='text' name='poolpass' value='" + htmlEscape(String(Settings.PoolPassword)) + "'>";
   page += "<label>BTC Address</label><input type='text' name='wallet' value='" + htmlEscape(String(Settings.BtcWallet)) + "'>";
   page += "<label>Timezone (UTC offset, -12/+12)</label><input type='number' name='tz' value='" + String(Settings.Timezone) + "'>";
+  page += "<label>BTC price currency</label><select name='currency'>";
+  for (int i = 0; i < kCurrencyCount; i++)
+  {
+    page += "<option value='" + String(kCurrencies[i].code) + "'";
+    if (Settings.Currency.equalsIgnoreCase(kCurrencies[i].code))
+      page += " selected";
+    page += ">" + String(kCurrencies[i].label) + "</option>";
+  }
+  page += "</select>";
   page += "<label><input type='checkbox' name='savestats' " + String(Settings.saveStats ? "checked" : "") + "> Save mining statistics to flash</label>";
 #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
   page += "<label><input type='checkbox' name='invert' " + String(Settings.invertColors ? "checked" : "") + "> Invert display colors</label>";
+  page += "<label><input type='checkbox' name='flip' " + String(Settings.flipDisplay ? "checked" : "") + "> Flip display (USB on the left)</label>";
   page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
 #endif
   page += F("<input type='submit' value='Save &amp; Restart'>"
@@ -86,18 +97,30 @@ static void handleSave()
     strncpy(Settings.BtcWallet, webCfgServer.arg("wallet").c_str(), sizeof(Settings.BtcWallet) - 1);
   if (webCfgServer.hasArg("tz"))
     Settings.Timezone = webCfgServer.arg("tz").toInt();
+  if (webCfgServer.hasArg("currency"))
+    Settings.Currency = currencyFor(webCfgServer.arg("currency")).code;
   Settings.saveStats = webCfgServer.hasArg("savestats");
 #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
   Settings.invertColors = webCfgServer.hasArg("invert");
+  Settings.flipDisplay = webCfgServer.hasArg("flip");
   if (webCfgServer.hasArg("brightness"))
     Settings.Brightness = webCfgServer.arg("brightness").toInt();
 #endif
 
   saveSettingsToFlash();
 
+  // The page polls until the device is back up, then returns to the settings
+  // page so the browser isn't left sitting on /save.
   webCfgServer.send(200, "text/html",
-                     "<!DOCTYPE html><html><body style='font-family:sans-serif'>"
-                     "<p>Saved. Restarting device...</p></body></html>");
+                     "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                     "<meta name='viewport' content='width=device-width, initial-scale=1'></head>"
+                     "<body style='font-family:sans-serif'>"
+                     "<p>Saved. Restarting device...</p>"
+                     "<p><a href='/'>Back to settings</a></p>"
+                     "<script>function p(){fetch('/',{cache:'no-store'})"
+                     ".then(function(r){if(r.ok||r.status==401)location.replace('/');else setTimeout(p,1500)})"
+                     ".catch(function(){setTimeout(p,1500)})}setTimeout(p,4000);</script>"
+                     "</body></html>");
 
   delay(1000);
   ESP.restart();
