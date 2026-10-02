@@ -1,14 +1,31 @@
-# NerdSoloMiner
+# NerdMiner Modded
 
-**The NerdSoloMiner v2**
+**A modded fork of the NerdSoloMiner v2**
+
+This is a modified version of the original **[NerdMiner_v2](https://github.com/BitMaker-hub/NerdMiner_v2)** by BitMaker-hub. All credit for the original project, the Stratum implementation and the multi-board support goes to the original authors and contributors. If you want the stock, widely tested firmware for any of the supported boards, use the original repository.
 
 This is a **free and open source project** that let you try to reach a bitcoin block with a small piece of hardware.
 
 The main aim of this project is to let you **learn more about minery** and to have a beautiful piece of hardware in your desktop.
 
-Original project https://github.com/valerio-vaccaro/HAN
+Original NerdMiner_v2 project https://github.com/BitMaker-hub/NerdMiner_v2
+(which itself started from https://github.com/valerio-vaccaro/HAN)
 
 ![image](images/bgNerdMinerV2.png)
+
+## What's different in this mod
+
+![NerdMiner Modded running on a CYD](images/nerdminer-mod.gif)
+
+> **⚠️ Tested on the CYD only.** All changes in this fork have so far been developed and tested on a single board: the **ESP32-2432S028R ("Cheap Yellow Display", CYD)**. Other boards still build from the same code base as the original, but they have **not** been tested with these changes. Expect rough edges, and please report what you find.
+
+- **High hashrate on the CYD** – the SHA-256 mining path for the classic ESP32 has been reworked to use the hardware SHA engine in a pipelined fashion, giving a sustained rate of roughly **670 KH/s** on the CYD (classic ESP32, both cores mining). Changes to the mining code are validated against share-integrity counters (no hash mismatches, and found hits must match real hits) so the extra speed is not coming at the cost of invalid shares.
+- **New "Pulse" display theme** – the CYD UI has been completely redesigned. It is bitmap-free and has three screens: **MINE**, **MARKET** and **CLOCK**. Tap the wordmark to cycle the accent colour, and tap the top-right corner to toggle the backlight.
+- **Classic theme still available** – prefer the original look? Build the `ESP32-2432S028R-Classic` environment (`pio run -e ESP32-2432S028R-Classic -t upload`).
+- **BTC price in your currency** – choose which fiat currency the BTC price is shown in from the web settings page.
+- **Improved web settings page** – the settings page stays reachable while mining, and now also has options for display flip (USB on the left), colour inversion, brightness and currency. After saving it waits for the device to restart and returns to the settings page automatically.
+
+For the other features, supported boards, flashing and configuration, the original documentation below still applies.
 
 ## Requirements
 
@@ -68,6 +85,8 @@ Every time an stratum job notification is received miner update its current work
 \*Affiliate links
 
 ### Flash firmware
+
+> **Note for this mod:** the online flasher and the prebuilt binaries referenced below come from the original project and will install the **original** firmware, not the modded one. To run NerdMiner Modded, build and flash this repository with PlatformIO, e.g. `pio run -e ESP32-2432S028R -t upload`.
 
 #### microMiners Flashtool [Recommended]
 
