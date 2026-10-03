@@ -109,7 +109,7 @@ static uint16_t mix565(uint16_t a, uint16_t b, uint8_t t)
 #define G_R 78
 #define G_RI 67
 #define G_SEGS 30
-#define G_MAX_KH 800.0f // full-scale of the ring (classic ESP32 tops out ~670)
+#define G_MAX_KH 1200.0f // full-scale of the ring: 40 KH/s per segment (the CYD runs ~950)
 
 // Bottom strip (pool cells / hashrate history)
 #define STRIP_Y 198
