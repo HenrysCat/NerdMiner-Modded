@@ -19,20 +19,20 @@ Original NerdMiner_v2 project https://github.com/BitMaker-hub/NerdMiner_v2
 
 > **⚠️ Tested on the CYD only.** All changes in this fork have so far been developed and tested on a single board: the **ESP32-2432S028R ("Cheap Yellow Display", CYD)**. Other boards still build from the same code base as the original, but they have **not** been tested with these changes. Expect rough edges, and please report what you find.
 
-- **High hashrate on the CYD** – the SHA-256 mining path for the classic ESP32 has been reworked to use the hardware SHA engine in a pipelined fashion, giving a sustained rate of roughly **670 KH/s** on the CYD (classic ESP32, both cores mining). Changes to the mining code are validated against share-integrity counters (no hash mismatches, and found hits must match real hits) so the extra speed is not coming at the cost of invalid shares.
+- **High hashrate on the CYD** – the SHA-256 mining path for the classic ESP32 has been reworked to use the hardware SHA engine in a pipelined fashion, giving a sustained rate of roughly **950 KH/s** on the CYD (classic ESP32, both cores mining). Changes to the mining code are validated hash by hash against software, so the extra speed is not coming at the cost of invalid shares.
 - **New "Pulse" display theme** – the CYD UI has been completely redesigned. It is bitmap-free and has three screens: **MINE**, **MARKET** and **CLOCK**. Tap the wordmark to cycle the accent colour, and tap the top-right corner to toggle the backlight.
 - **Classic theme still available** – prefer the original look? Build the `ESP32-2432S028R-Classic` environment (`pio run -e ESP32-2432S028R-Classic -t upload`).
 - **BTC price in your currency** – choose which fiat currency the BTC price is shown in from the web settings page.
 - **Improved web settings page** – the settings page stays reachable while mining, and now also has options for display flip (USB on the left), colour inversion, brightness and currency. After saving it waits for the device to restart and returns to the settings page automatically.
 
-### Why this hashrate is realistic
+### Why this hashrate is real
 
-You will see miners quoting much higher numbers for the same class of hardware. The ~670 KH/s here is deliberately a conservative, honest figure, and it is close to the practical ceiling of the classic ESP32:
+The ~950 KH/s is what the miner actually hashes, not what a counter says:
 
-- **Hardware limit** – the classic ESP32's SHA engine can't be loaded with an external midstate, so every nonce costs three hardware hash blocks plus two engine loads. That caps what the chip can physically do, and ~670 KH/s is already near it.
-- **Only valid hashes are counted** – the shown rate is measured from the miner's real work, and any change to the hashing code has to pass an integrity check: zero hash mismatches against a reference, and every share the miner reports must match a real hit. A hashrate counter on its own can look 5-8% faster after an optimisation while the miner is quietly producing *fewer* valid shares, because corrupted hashes are still counted. Those numbers look good but are not mining progress.
+- **Hardware limit** – the classic ESP32's SHA engine can't be loaded with an external midstate, so every nonce costs three hardware hash blocks plus two engine loads: about 228 CPU cycles of engine time, a ceiling of roughly 1.05 MH/s at 240 MHz. The mining loop keeps the engine busy for all but ~30 cycles of each nonce (257 cycles per nonce, ~930 KH/s); the second core adds ~25 KH/s in software.
+- **Measured on the chip** – the loop's timing comes from an on-device bench (`-D SHA_BENCH`, see `src/sha_bench.cpp`) that checks every single hash against software, also while the other core hammers the peripheral bus. That is how the hardware quirk behind silently corrupted hashes in the usual pipelined loops was found: writes to the SHA registers less than three cycles apart can be dropped whenever the other core is using the same bus.
+- **Only valid hashes are counted** – every candidate the hardware finds is recomputed in software before it is used. A hashrate counter on its own can look faster after an optimisation while the miner is quietly producing *fewer* valid shares, because corrupted hashes are still counted; here the firmware checks itself with a known-answer test at power-on and falls back to a slower loop if the fast one ever gets hashes wrong.
 - **The rate is the rate it actually mines at** – it's the sustained average over a long run, not a short burst or a best-case peak.
-- **Chip class matters** – figures around 1 MH/s come from newer ESP32-S3-class silicon, which is simply not achievable on a classic ESP32 like the CYD.
 
 If a number sounds too good for this chip, check whether the shares it finds actually keep up with it.
 

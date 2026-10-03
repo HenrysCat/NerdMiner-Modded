@@ -41,13 +41,18 @@ extern std::mutex g_hwShaMutex;
 #undef HARDWARE_SHA265
 #endif
 
-// Build flag to A/B test: an alternate classic-ESP32 HW mining loop (see
-// src/pipelined_hw_sha_classic.cpp) that overlaps CPU register-fill work
-// with SHA peripheral busy time instead of idle-spinning through it, ported
-// (MIT license, same upstream) from dwespl/nerdminer-axehub. Every candidate
-// hit is still reverified with the existing software nerd_sha256d_baked()
-// path before being trusted, so a bug in the ported asm can only cost a
-// missed share, never a bad submission. Only affects CONFIG_IDF_TARGET_ESP32
+// Build flag: pipelined classic-ESP32 HW mining loops that overlap the CPU's
+// register traffic with the SHA engine's busy time instead of idle-spinning
+// through it. The worker picks the fastest one that passes a known-answer
+// test at power-on (see pl_select_loop in mining.cpp):
+//   src/pipelined_hw_sha_classic_v2.S   schedule measured on the chip, no
+//                                       status polling
+//   src/pipelined_hw_sha_classic.cpp    the original BUSY-polling loop, ported
+//                                       (MIT license, same upstream) from
+//                                       dwespl/nerdminer-axehub; last fallback
+// Every candidate is still recomputed with the software nerd_sha256d_baked()
+// path before being trusted, so a bug in the asm can only cost a missed
+// share, never a bad submission. Only affects CONFIG_IDF_TARGET_ESP32
 // (classic ESP32 / D0WD, e.g. CYD boards) when HARDWARE_SHA265 is active.
 //#define PIPELINED_ASM_MINING
 

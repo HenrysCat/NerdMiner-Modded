@@ -76,6 +76,12 @@ void setup()
   Serial.setTimeout(0);
   delay(SECOND_MS/10);
 
+#ifdef SHA_BENCH
+  // SHA engine characterisation bench instead of the miner (src/sha_bench.cpp)
+  extern void sha_bench_run();
+  sha_bench_run();
+#endif
+
   esp_task_wdt_init(WDT_MINER_TIMEOUT, true);
   // Idle task that would reset WDT never runs, because core 0 gets fully utilized
   disableCore0WDT();

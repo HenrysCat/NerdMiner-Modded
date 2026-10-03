@@ -10,3 +10,5 @@ logs
 boards/ESP32_wroom_guide.md
 
 firmware/
+
+__pycache__/

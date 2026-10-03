@@ -3,6 +3,14 @@
 // dwespl/nerdminer-axehub's axehub_hw_pipelined_mine_classic(), which itself
 // is a fork of BitMaker-hub/NerdMiner_v2 (this project's upstream).
 //
+// SUPERSEDED by src/pipelined_hw_sha_classic_v2.S, which is ~37% faster and
+// explains the corruption this file could only work around: it isn't TEXT
+// stores in busy windows as such, it is stores less than three cycles apart,
+// which get dropped when the other core is on the DPORT bus. This loop has
+// such stores (rarely fatal: ~1 wrong hash in a few thousand with a busy
+// core 0), so it is only kept as the last fallback for a chip on which the
+// measured schedule of the new loop fails its self-test.
+//
 // Technique vs. the plain-C classic-ESP32 HW path in mining.cpp: the C path
 // fills registers, triggers the SHA engine, then busy-waits doing nothing
 // until it's done. This version overlaps that otherwise-wasted busy-wait

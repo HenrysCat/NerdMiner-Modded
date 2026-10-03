@@ -27,7 +27,7 @@
 // returns to C mid-job at all) showed the redundant per-chunk SW midstate/
 // bake precompute plus periph_module_reset() was costing real throughput
 // at the old size, dwarfing the actual hash time of a 16384-nonce chunk
-// (~25ms at ~650KH/s). 256*1024 chunks take ~400ms, well inside the 900s
+// (~25ms at ~650KH/s). 256*1024 chunks take ~280ms, well inside the 900s
 // mining watchdog timeout, and job-change latency at that granularity is
 // imperceptible against how often stratum jobs actually change. Tried
 // pushing this to 1024*1024 (~1.5s/chunk) expecting a further gain from
@@ -51,6 +51,7 @@
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
 #include <sha/sha_parallel_engine.h>
+#include <driver/periph_ctrl.h>
 #endif
 
 #endif
@@ -70,19 +71,18 @@ uint64_t upTime = 0;
 // its own counter, so no locking is needed.
 volatile uint32_t debugHashesHw = 0;
 volatile uint32_t debugHashesSw[2] = {0, 0};
-// Temporary diagnostics for the pipelined-asm HW path: is the asm's
-// early-reject check firing at the expected ~1/65536 rate, and does the SW
-// reverify's recomputed hash actually match what the hardware itself
-// produced for that same nonce?
+// Diagnostics for the pipelined-asm HW path. Every candidate the loop reports
+// (low 16 digest bits zero, ~1 in 65536 nonces) is recomputed in software:
+//   hits     candidates reported by the hardware loop
+//   real     ...that software confirms
+//   mismatch ...that it doesn't, i.e. hashes the hardware got wrong
+//   accepted confirmed candidates that were also shares
+// mismatch/hits estimates the fraction of ALL hashes computed wrong (silently
+// lost shares); hits * 65536 / seconds is the true hashrate, independent of
+// the hash counters.
 volatile uint32_t debugPipelinedHits = 0;
 volatile uint32_t debugPipelinedHwSwMismatch = 0;
 volatile uint32_t debugPipelinedAccepted = 0;
-// Ground truth for mining integrity, independent of the hw-digest re-read
-// (which can be scrambled by benign register traffic after the asm's
-// early-reject decision was already made): a "real" hit is one whose SW
-// recompute confirms the low 16 result bits are zero. real/hits should be
-// ~100%; every point below that is hashes the HW computed wrong -- i.e.
-// silently lost shares.
 volatile uint32_t debugPipelinedRealHits = 0;
 // Diagnostic for the classic-ESP32 chunk-boundary "dead time" theory: total
 // microseconds spent between finishing one HW job chunk (mutex released)
@@ -219,10 +219,21 @@ std::list<std::shared_ptr<JobRequest>> s_job_request_list_hw;
 #endif
 std::list<std::shared_ptr<JobResult>> s_job_result_list;
 static volatile uint8_t s_working_current_job_id = 0xFF;
-// Run flag for the pipelined HW loop. The asm polls it every iteration, so
-// clearing it from the stratum task stops a stale-job chunk immediately
-// instead of at its next ~1/65536 candidate hit (~100 ms later).
-static volatile bool s_hw_run = false;
+#if defined(PIPELINED_ASM_MINING) && defined(CONFIG_IDF_TARGET_ESP32)
+// What the pipelined HW loop works from (layout is known to the asm, see
+// src/pipelined_hw_sha_classic_v2.S).
+struct pl_ctx_t
+{
+  uint32_t hdr[20];       // header words as the SHA engine wants them (byte-swapped)
+  uint32_t nonce;         // in: first nonce to try (swapped space); out: next one
+  uint32_t budget;        // in: nonces to try; out: nonces not tried
+  volatile uint32_t run;  // the asm reads it every nonce, so clearing it from the
+                          // stratum task stops a stale-job chunk at once
+  uint32_t pad;           // 0x80000000
+  uint32_t chk;           // bench builds only
+};
+static pl_ctx_t s_pl_ctx;
+#endif
 
 static void JobPush(std::list<std::shared_ptr<JobRequest>> &job_list,  uint32_t id, uint32_t nonce_start, uint32_t nonce_count, double difficulty,
                     const uint8_t* sha_buffer, const uint32_t* midstate, const uint32_t* bake)
@@ -455,7 +466,9 @@ void runStratumWorker(void *name) {
                                             #endif
                                             job_pool++;
                                             s_working_current_job_id = job_pool & 0xFF; //Terminate current job in thread
-                                            s_hw_run = false;                           //...and stop the HW loop mid-chunk right now
+                                            #if defined(PIPELINED_ASM_MINING) && defined(CONFIG_IDF_TARGET_ESP32)
+                                            s_pl_ctx.run = 0;                           //...and stop the HW loop mid-chunk right now
+                                            #endif
                                             for (int i = 0; i < 4; ++ i)
                                             {
                                               #if 1
@@ -1102,8 +1115,18 @@ static inline void nerd_sha_ll_fill_text_block_sha256_double()
 }
 
 #ifdef PIPELINED_ASM_MINING
-// See src/pipelined_hw_sha_classic.cpp. Overlaps CPU register-fill work with
-// SHA peripheral busy time instead of idle-spinning through it.
+// Pipelined HW loops: they overlap the CPU's register traffic with the SHA
+// engine's busy time instead of idle-spinning through it. All share one
+// calling convention -- 1 = candidate at ctx->nonce - 1, 0 = budget spent or
+// ctx->run cleared -- so the worker can swap one for another.
+typedef uint32_t (*pl_mine_fn)(volatile uint32_t *sha_base, pl_ctx_t *ctx);
+
+// src/pipelined_hw_sha_classic_v2.S: counted delays, no status polling.
+extern "C" uint32_t pipelined_hw_mine_classic_v2(volatile uint32_t *sha_base, pl_ctx_t *ctx);
+extern "C" uint32_t pipelined_hw_mine_classic_v2_wide(volatile uint32_t *sha_base, pl_ctx_t *ctx);
+
+// src/pipelined_hw_sha_classic.cpp: the original BUSY-polling loop, ~27%
+// slower. Only kept as the last fallback.
 extern "C" bool pipelined_hw_mine_classic(
     volatile uint32_t *sha_base,
     const uint32_t *header_swapped,
@@ -1112,6 +1135,101 @@ extern "C" bool pipelined_hw_mine_classic(
     volatile bool *mining_flag,
     uint32_t iter_budget);
 extern "C" void pipelined_hw_mine_classic_reinit(void);
+
+static uint32_t pl_mine_legacy(volatile uint32_t *sha_base, pl_ctx_t *ctx)
+{
+  uint32_t done = 0;
+  // It polls a bool and clears it itself when the budget is spent; ctx->run's
+  // low byte serves as that bool.
+  bool hit = pipelined_hw_mine_classic(sha_base, ctx->hdr, &ctx->nonce, &done,
+                                       (volatile bool *)&ctx->run, ctx->budget);
+  ctx->budget -= done;
+  if (hit)
+    pipelined_hw_mine_classic_reinit();
+  else if (ctx->budget == 0)
+    ctx->run = 1;
+  return hit;
+}
+
+static const struct { pl_mine_fn fn; const char *name; } s_pl_loops[] = {
+  {pipelined_hw_mine_classic_v2,      "fast"},
+  {pipelined_hw_mine_classic_v2_wide, "fast, wide margins"},
+  {pl_mine_legacy,                    "polled"},
+};
+#define PL_LOOP_COUNT (sizeof(s_pl_loops) / sizeof(s_pl_loops[0]))
+static unsigned s_pl_loop = 0;
+
+// Known-answer test: for the header hdr[i] = 0x9E3779B9 * (i + 1), these are
+// the only candidates among the 262144 nonces from 0x1000 up. A loop passes
+// if it reports exactly these, in order -- one wrong hash among the 262144
+// that happens to be a candidate, or hides one, fails it.
+static bool pl_selftest(pl_mine_fn fn)
+{
+  static const uint32_t expected[] = {0xa94c, 0xe496, 0x1f476, 0x302f0, 0x35af9, 0x3cf5c};
+  const uint32_t first = 0x1000;
+  static pl_ctx_t c; // not s_pl_ctx: the stratum task may clear that one's run flag at any time
+  for (uint32_t i = 0; i < 19; ++i)
+    c.hdr[i] = 0x9E3779B9u * (i + 1);
+  c.nonce = first;
+  c.budget = 262144;
+  c.pad = 0x80000000u;
+  c.run = 1;
+  size_t found = 0;
+  while (c.budget > 0 && fn((volatile uint32_t *)SHA_TEXT_BASE, &c))
+  {
+    if (found >= sizeof(expected) / sizeof(expected[0]) || c.nonce - 1 - first != expected[found])
+      return false;
+    found++;
+  }
+  return found == sizeof(expected) / sizeof(expected[0]) && c.budget == 0;
+}
+
+// Picks the fastest loop this chip runs correctly. The fast loops rely on
+// the engine's timing as measured on ESP32-D0WD-V3; anything that behaves
+// differently fails the known-answer test and drops to the next one.
+static void pl_select_loop()
+{
+  g_hwShaMutex.lock();
+  esp_sha_lock_engine(SHA2_256);
+  periph_module_reset(PERIPH_SHA_MODULE);
+  unsigned n = 0;
+  // Best of three: one stray candidate (a misread digest word) must not cost
+  // the fast loop for the whole uptime.
+  while (n + 1 < PL_LOOP_COUNT && !pl_selftest(s_pl_loops[n].fn) && !pl_selftest(s_pl_loops[n].fn) &&
+         !pl_selftest(s_pl_loops[n].fn))
+  {
+    Serial.printf("[MINER] HW SHA loop '%s' failed its self-test\n", s_pl_loops[n].name);
+    n++;
+  }
+  #ifdef PL_FORCE_LOOP
+  n = PL_FORCE_LOOP; // A/B testing: 0 fast, 1 wide margins, 2 polled
+  #endif
+  s_pl_loop = n;
+  esp_sha_unlock_engine(SHA2_256);
+  g_hwShaMutex.unlock();
+  Serial.printf("[MINER] HW SHA loop: %s\n", s_pl_loops[n].name);
+}
+
+// Every candidate is recomputed in software before it is used, which makes
+// the share of candidates software does NOT confirm a running estimate of how
+// many hashes the loop gets wrong. It is ~0 when healthy; if it ever isn't,
+// stop trusting the loop and use the next, more conservative one.
+static void pl_health(bool confirmed)
+{
+  static uint32_t hits = 0, unconfirmed = 0;
+  hits++;
+  if (!confirmed)
+    unconfirmed++;
+  if (hits < 256)
+    return;
+  if (unconfirmed >= 8 && s_pl_loop + 1 < PL_LOOP_COUNT)
+  {
+    s_pl_loop++;
+    Serial.printf("[MINER] %u of %u HW candidates not confirmed; switching HW SHA loop to: %s\n",
+                  unconfirmed, hits, s_pl_loops[s_pl_loop].name);
+  }
+  hits = unconfirmed = 0;
+}
 #endif
 
 void minerWorkerHw(void * task_id)
@@ -1149,6 +1267,8 @@ void minerWorkerHw(void * task_id)
   uint8_t pipelined_native_header_cache[80];
   uint32_t pipelined_midstate_cache[8];
   uint32_t pipelined_bake_cache[16];
+
+  pl_select_loop();
   #endif
 
   #ifdef DEBUG_MINING
@@ -1202,19 +1322,14 @@ void minerWorkerHw(void * task_id)
       esp_sha_lock_engine(SHA2_256);
 #ifdef PIPELINED_ASM_MINING
       {
-        // Reverify setup: native-order header + SW midstate/bake. job->midstate
-        // is HW-format and is never computed for classic ESP32 (only S2/S3/C3
-        // do that), so it can't be reused here -- but our own cache (below,
-        // keyed on job->id) can be.
-        const uint32_t *header_words_pl = (const uint32_t *)sha_buffer;
         if (job->id != pipelined_last_job_id)
         {
           // New stratum job: reseed from this job's native nonce_start, and
-          // recompute the SW midstate/bake cache. Any later chunk pop that's
-          // still the same job continues from pipelined_swapped_cursor and
-          // reuses the cached midstate/bake instead, so chunks can never
-          // overlap in the space actually being searched, and never redo a
-          // SHA256 transform whose input hasn't changed.
+          // recompute the SW midstate/bake cache used to recheck candidates
+          // (job->midstate is HW-format and never computed for classic
+          // ESP32). Any later chunk pop that's still the same job continues
+          // from pipelined_swapped_cursor and reuses the cache, so chunks
+          // can never overlap in the space actually being searched.
           pipelined_last_job_id = job->id;
           pipelined_swapped_cursor = __builtin_bswap32(job->nonce_start);
           for (int i = 0; i < 20; ++i)
@@ -1222,113 +1337,68 @@ void minerWorkerHw(void * task_id)
           nerd_mids(pipelined_midstate_cache, pipelined_native_header_cache);
           nerd_sha256_bake(pipelined_midstate_cache, pipelined_native_header_cache + 64, pipelined_bake_cache);
         }
-        uint8_t *native_header_pl = pipelined_native_header_cache;
-        uint32_t *sw_midstate_pl = pipelined_midstate_cache;
-        uint32_t *sw_bake_pl = pipelined_bake_cache;
-        uint32_t nonce_swapped_pl = pipelined_swapped_cursor;
-        uint32_t hash_count_low_pl = 0;
-        volatile bool &pipelined_active_pl = s_hw_run;
-        pipelined_active_pl = true;
 
-        #ifdef DEBUG_MINING
-        static uint32_t s_dbgChunkPrints = 0;
-        if (s_dbgChunkPrints < 40)
+        memcpy(s_pl_ctx.hdr, sha_buffer, sizeof(s_pl_ctx.hdr));
+        s_pl_ctx.nonce = pipelined_swapped_cursor;
+        s_pl_ctx.budget = job->nonce_count;
+        s_pl_ctx.pad = 0x80000000u;
+        // Set, then look at the job id: whichever way this interleaves with
+        // the stratum task switching jobs (it changes the id first and
+        // clears run second), a stale chunk ends up with run == 0.
+        s_pl_ctx.run = 1;
+        if (s_working_current_job_id != job_in_work)
+          s_pl_ctx.run = 0;
+
+        // Whatever used the engine last (TLS, the previous chunk's
+        // abandoned block) is finished; start from a clean peripheral.
+        periph_module_reset(PERIPH_SHA_MODULE);
+
+        while (s_pl_ctx.run && s_pl_ctx.budget > 0)
         {
-          s_dbgChunkPrints++;
-          Serial.printf("[PLDBG] chunk job_id=%u nonce_start=0x%08X count=%u\n",
-                        job->id, job->nonce_start, job->nonce_count);
-        }
-        #endif
-
-        while (pipelined_active_pl && hash_count_low_pl < job->nonce_count)
-        {
-          if (s_working_current_job_id != job_in_work)
-          {
-            pipelined_active_pl = false;
-            break;
-          }
-
-          #ifdef DEBUG_MINING
-          uint32_t dbg_before_hash = hash_count_low_pl;
-          uint32_t dbg_before_nonce = nonce_swapped_pl;
-          #endif
-
-          bool hit_pl = pipelined_hw_mine_classic(
-              (volatile uint32_t *)SHA_TEXT_BASE,
-              header_words_pl,
-              &nonce_swapped_pl,
-              &hash_count_low_pl,
-              &pipelined_active_pl,
-              job->nonce_count - hash_count_low_pl);
-
-          #ifdef DEBUG_MINING
-          if (s_dbgChunkPrints < 40)
-          {
-            s_dbgChunkPrints++;
-            Serial.printf("[PLDBG] call before(hash=%u,n=0x%08X) after(hash=%u,n=0x%08X) hit=%d\n",
-                          dbg_before_hash, dbg_before_nonce, hash_count_low_pl, nonce_swapped_pl, hit_pl);
-          }
-          #endif
-
-          if (!hit_pl)
+          if (!s_pl_loops[s_pl_loop].fn((volatile uint32_t *)SHA_TEXT_BASE, &s_pl_ctx))
             break;
 
           #ifdef DEBUG_MINING
           int64_t hitOverheadStartUs = esp_timer_get_time();
           debugPipelinedHits++;
-          // Read the hardware's own digest for this candidate BEFORE it
-          // gets clobbered by reinit(), to check the SW reverify below
-          // actually reproduces what the hardware computed.
-          uint8_t hw_hash_dbg[32];
-          bool hw_read_ok_dbg = nerd_sha_ll_read_digest_swap_if(hw_hash_dbg);
           #endif
 
-          // Asm post-increments nonce_swapped after writing TEXT[3] and
-          // signals BUSY-done on LOAD2 — the candidate is the value that
-          // was actually hashed this iteration, i.e. nonce_swapped - 1.
-          uint32_t cand_swapped_pl = nonce_swapped_pl - 1;
-          uint32_t cand_native_pl  = __builtin_bswap32(cand_swapped_pl);
-
-          ((uint32_t *)(native_header_pl + 64 + 12))[0] = cand_native_pl;
+          // The loop only looks at 16 bits of the digest and doesn't keep
+          // it; recompute the candidate (the nonce before the one it
+          // stopped on) in software.
+          uint32_t cand_native_pl = __builtin_bswap32(s_pl_ctx.nonce - 1);
+          ((uint32_t *)(pipelined_native_header_cache + 64 + 12))[0] = cand_native_pl;
           uint8_t sw_hash[32];
-          bool sw_confirms_pl = nerd_sha256d_baked(sw_midstate_pl, native_header_pl + 64, sw_bake_pl, sw_hash);
+          bool confirmed = nerd_sha256d_baked(pipelined_midstate_cache, pipelined_native_header_cache + 64,
+                                              pipelined_bake_cache, sw_hash);
+          pl_health(confirmed);
           #ifdef DEBUG_MINING
-          if (sw_confirms_pl)
+          if (confirmed)
             debugPipelinedRealHits++;
-          #else
-          (void)sw_confirms_pl;
-          #endif
-
-          #ifdef DEBUG_MINING
-          if (!hw_read_ok_dbg || memcmp(hw_hash_dbg, sw_hash, 32) != 0)
-          {
+          else
             debugPipelinedHwSwMismatch++;
-            if (debugPipelinedHwSwMismatch <= 5)
-            {
-              Serial.printf("[PLDBG] MISMATCH nonce=0x%08X hw_ok=%d\n", cand_native_pl, hw_read_ok_dbg);
-              Serial.print("  hw: "); for (int i=0;i<32;i++) Serial.printf("%02x", hw_hash_dbg[i]); Serial.println();
-              Serial.print("  sw: "); for (int i=0;i<32;i++) Serial.printf("%02x", sw_hash[i]); Serial.println();
-            }
-          }
           #endif
 
-          double diff_hash = diff_from_target(sw_hash);
-          if (diff_hash > result->difficulty)
+          if (confirmed && diff_from_target(sw_hash) > job->difficulty && isSha256Valid(sw_hash))
           {
-            if (isSha256Valid(sw_hash))
-            {
-              #ifdef DEBUG_MINING
-              debugPipelinedAccepted++;
-              #endif
-              result->difficulty = diff_hash;
-              result->nonce = cand_native_pl;
-              memcpy(result->hash, sw_hash, sizeof(sw_hash));
-            }
+            // A share. Hand it over now rather than with the chunk's
+            // result: at low pool difficulty a 256K-nonce chunk regularly
+            // holds two, and it should not wait ~0.3 s for the chunk to
+            // end (a job change in that time would void it).
+            #ifdef DEBUG_MINING
+            debugPipelinedAccepted++;
+            #endif
+            std::shared_ptr<JobResult> share = std::make_shared<JobResult>();
+            share->id = job->id;
+            share->nonce = cand_native_pl;
+            share->nonce_count = 0;
+            share->difficulty = diff_from_target(sw_hash);
+            memcpy(share->hash, sw_hash, sizeof(sw_hash));
+            std::lock_guard<std::mutex> lock(s_job_mutex);
+            if (s_job_result_list.size() < 64) // only guards against a stuck stratum task
+              s_job_result_list.push_back(share);
           }
 
-          // Drop any sticky internal H state left by the asm sequence so
-          // the next call starts from a clean SHA engine.
-          pipelined_hw_mine_classic_reinit();
           #ifdef DEBUG_MINING
           debugHitOverheadUs += (uint32_t)(esp_timer_get_time() - hitOverheadStartUs);
           debugHitOverheadCount++;
@@ -1338,10 +1408,10 @@ void minerWorkerHw(void * task_id)
         // same stratum job continues from here instead of re-deriving a
         // (possibly overlapping) start point from that chunk's own
         // native-space nonce_start.
-        pipelined_swapped_cursor = nonce_swapped_pl;
-        result->nonce_count = hash_count_low_pl;
+        pipelined_swapped_cursor = s_pl_ctx.nonce;
+        result->nonce_count = job->nonce_count - s_pl_ctx.budget;
         #ifdef DEBUG_MINING
-        debugHashesHw += hash_count_low_pl;
+        debugHashesHw += result->nonce_count;
         #endif
       }
 #else
