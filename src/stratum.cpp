@@ -208,6 +208,11 @@ bool parse_mining_notify(String line, mining_job& mJob)
 bool tx_mining_submit(WiFiClient& client, mining_subscribe mWorker, mining_job mJob, unsigned long nonce, unsigned long &submit_id)
 {
     char payload[BUFFER] = {0};
+    char nonceHex[9];
+
+    // Nonce must always be 8 hex digits: String(nonce, HEX) drops leading zeros,
+    // and pools reject the short form with "No nonce" (~1 in 16 shares).
+    snprintf(nonceHex, sizeof(nonceHex), "%08lx", nonce);
 
     // Submit
     id = getNextId(id);
@@ -218,7 +223,7 @@ bool tx_mining_submit(WiFiClient& client, mining_subscribe mWorker, mining_job m
         mJob.job_id.c_str(),
         mWorker.extranonce2.c_str(),
         mJob.ntime.c_str(),
-        String(nonce, HEX).c_str()
+        nonceHex
         );
     Serial.print("  Sending  : "); Serial.print(payload);
     client.print(payload);

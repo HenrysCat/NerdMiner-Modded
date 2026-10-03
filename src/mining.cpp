@@ -219,6 +219,10 @@ std::list<std::shared_ptr<JobRequest>> s_job_request_list_hw;
 #endif
 std::list<std::shared_ptr<JobResult>> s_job_result_list;
 static volatile uint8_t s_working_current_job_id = 0xFF;
+// Run flag for the pipelined HW loop. The asm polls it every iteration, so
+// clearing it from the stratum task stops a stale-job chunk immediately
+// instead of at its next ~1/65536 candidate hit (~100 ms later).
+static volatile bool s_hw_run = false;
 
 static void JobPush(std::list<std::shared_ptr<JobRequest>> &job_list,  uint32_t id, uint32_t nonce_start, uint32_t nonce_count, double difficulty,
                     const uint8_t* sha_buffer, const uint32_t* midstate, const uint32_t* bake)
@@ -390,17 +394,12 @@ void runStratumWorker(void *name) {
       {
           case MINING_NOTIFY:         if(parse_mining_notify(line, mJob))
                                       {
-                                          {
-                                            std::lock_guard<std::mutex> lock(s_job_mutex);
-                                            s_job_request_list_sw.clear();
-                                            #ifdef HARDWARE_SHA265
-                                            s_job_request_list_hw.clear();
-                                            #endif
-                                          }
+                                          // The old job keeps mining while the new one is prepared below
+                                          // (calculateMiningData prints a lot to the UART, which blocks for
+                                          // hundreds of ms); the queues are swapped atomically just before
+                                          // the new chunks are pushed instead of idling the miners up front.
                                           //Increse templates readed
                                           templates++;
-                                          job_pool++;
-                                          s_working_current_job_id = job_pool & 0xFF; //Terminate current job in thread
 
                                           last_job_time = millis();
                                           mLastTXtoPool = last_job_time;
@@ -450,6 +449,13 @@ void runStratumWorker(void *name) {
 
                                           {
                                             std::lock_guard<std::mutex> lock(s_job_mutex);
+                                            s_job_request_list_sw.clear();
+                                            #ifdef HARDWARE_SHA265
+                                            s_job_request_list_hw.clear();
+                                            #endif
+                                            job_pool++;
+                                            s_working_current_job_id = job_pool & 0xFF; //Terminate current job in thread
+                                            s_hw_run = false;                           //...and stop the HW loop mid-chunk right now
                                             for (int i = 0; i < 4; ++ i)
                                             {
                                               #if 1
@@ -1221,7 +1227,8 @@ void minerWorkerHw(void * task_id)
         uint32_t *sw_bake_pl = pipelined_bake_cache;
         uint32_t nonce_swapped_pl = pipelined_swapped_cursor;
         uint32_t hash_count_low_pl = 0;
-        volatile bool pipelined_active_pl = true;
+        volatile bool &pipelined_active_pl = s_hw_run;
+        pipelined_active_pl = true;
 
         #ifdef DEBUG_MINING
         static uint32_t s_dbgChunkPrints = 0;
