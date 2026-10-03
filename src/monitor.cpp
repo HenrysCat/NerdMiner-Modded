@@ -52,6 +52,11 @@ enum PoolApiStyle {
   POOL_API_CKPOOL,
 };
 int poolApiStyle = POOL_API_PUBLICPOOL;
+// Both are worked out on the setup() task and again, later, on the monitor
+// task that also reads them; working them out takes DNS lookups. The lock
+// keeps a reader from seeing a half-finished answer (it used to see the
+// public-pool default and ask the wrong pool for stats).
+static std::mutex s_poolApiMutex;
 
 
 void setup_monitor(void){
@@ -65,8 +70,7 @@ void setup_monitor(void){
 
     Serial.println("TimeClient setup done");
 #ifdef SCREEN_WORKERS_ENABLE
-    poolAPIUrl = getPoolAPIUrl();
-    Serial.println("poolAPIUrl: " + poolAPIUrl);
+    Serial.println("poolAPIUrl: " + getPoolAPIUrl());
 #endif
 }
 
@@ -430,26 +434,52 @@ coin_data getCoinData(unsigned long mElapsed)
 }
 
 // Which heliospool region server our stratum connection landed on. The stats
-// API is per-region and a user only has live data on the server they mine to.
-// The generic btc.heliospool.com hostname is a geo load balancer, so when the
-// hostname doesn't name a region, match its resolved IP against the regional
-// stratum hostnames. Only cached once resolved (DNS needs WiFi up).
+// API is per-region: a user only has live data on the server they mine to,
+// is unknown (404) on servers they never used, and keeps stale data (zero
+// workers) on servers they used in the past. The generic btc.heliospool.com
+// hostname is a geo load balancer, so when the hostname doesn't name a
+// region, match the address the stratum connection actually uses against the
+// regional stratum hostnames. (Not a fresh lookup of the pool hostname: the
+// balancer can hand out a different region from one lookup to the next, and
+// the stats then come from the wrong server for the whole uptime.)
+extern IPAddress serverIP; // mining.cpp; 1.1.1.1 until the pool has been resolved
 static const char* const HELIOS_REGIONS[] = {"eu-west", "us-west", "ca-east", "au-south"};
-static String heliosRegion;
+#define HELIOS_REGION_COUNT (sizeof(HELIOS_REGIONS) / sizeof(HELIOS_REGIONS[0]))
+static String heliosRegion;          // region in use, empty = not worked out yet
+static IPAddress heliosRegionIp;     // stratum address it was worked out for
+static bool heliosRegionInHost = false; // the pool hostname names it: nothing to work out
+static bool heliosRegionSure = false;   // matched by address, or seen with live workers
+static uint8_t heliosMisses = 0;        // consecutive answers from a wrong server
+#define HELIOS_RETRY_ms 30000           // how soon to ask the next region after one
+
+// True when the region has to be worked out (again): never done, or the
+// stratum connection has since moved to another address.
+static bool heliosRegionStale(void) {
+    if (heliosRegionInHost) return false;
+    return heliosRegion.isEmpty() || heliosRegionIp != serverIP;
+}
+
 String getHeliosRegion(void) {
-    if (heliosRegion.length()) return heliosRegion;
+    if (!heliosRegionStale()) return heliosRegion;
     const String& host = Settings.PoolAddress;
+    const char* named = NULL;
     for (const char* r : HELIOS_REGIONS) {
-        if (host.indexOf(r) >= 0) return heliosRegion = r;
+        if (host.indexOf(r) >= 0) named = r;
     }
-    if (host.indexOf("heliospool.eu") >= 0) return heliosRegion = "eu-west";
-    if (host.indexOf("heliospool.asia") >= 0) return heliosRegion = "au-south";
-    IPAddress poolIp;
-    if (WiFi.status() == WL_CONNECTED && WiFi.hostByName(host.c_str(), poolIp)) {
+    if (!named && host.indexOf("heliospool.eu") >= 0) named = "eu-west";
+    if (!named && host.indexOf("heliospool.asia") >= 0) named = "au-south";
+    if (named) {
+        heliosRegionInHost = true;
+        return heliosRegion = named;
+    }
+    const IPAddress poolIp = serverIP;
+    if (WiFi.status() == WL_CONNECTED && poolIp != IPAddress(1, 1, 1, 1)) {
         for (const char* r : HELIOS_REGIONS) {
             IPAddress regionIp;
             if (WiFi.hostByName((String("btc-") + r + ".heliospool.com").c_str(), regionIp) && regionIp == poolIp) {
                 Serial.printf("heliospool region: %s\n", r);
+                heliosRegionIp = poolIp;
+                heliosRegionSure = true;
                 return heliosRegion = r;
             }
         }
@@ -457,56 +487,95 @@ String getHeliosRegion(void) {
     return "eu-west"; // best guess; not cached so a later call can retry the lookup
 }
 
+// Judge a stats answer. If it came from the wrong region's server -- the user
+// is unknown there, or (when the region is only a guess) has no live workers
+// there -- switch poolAPIUrl to the next region, so a wrong region corrects
+// itself instead of sticking. Returns true if the next request should follow
+// soon instead of after the usual UPDATE_POOL_min. Once every region has been
+// asked without finding live workers (a new wallet has none anywhere yet),
+// start over from the address match at the usual pace: every request pauses
+// the HW miner for its TLS handshake.
+static bool heliosJudgeAnswer(int httpCode, int workers) {
+    if (heliosRegionInHost) return false;
+    if (httpCode == HTTP_CODE_OK && workers > 0) {
+        heliosRegionSure = true;
+        heliosMisses = 0;
+        return false;
+    }
+    const bool wrongServer = httpCode == HTTP_CODE_NOT_FOUND || (httpCode == HTTP_CODE_OK && !heliosRegionSure);
+    if (!wrongServer) return false;
+    if (heliosMisses >= HELIOS_REGION_COUNT - 1) {
+        heliosRegion = "";
+        heliosMisses = 0;
+        return false;
+    }
+    size_t i = 0;
+    while (i < HELIOS_REGION_COUNT && heliosRegion != HELIOS_REGIONS[i]) i++;
+    heliosRegion = HELIOS_REGIONS[(i + 1) % HELIOS_REGION_COUNT];
+    heliosRegionIp = serverIP;
+    heliosRegionSure = false;
+    {
+        std::lock_guard<std::mutex> lock(s_poolApiMutex);
+        poolAPIUrl = "https://api-btc-" + heliosRegion + ".heliospool.com/users/";
+    }
+    Serial.printf("heliospool region: trying %s\n", heliosRegion.c_str());
+    heliosMisses++;
+    return true;
+}
+
 String getPoolAPIUrl(void) {
-    poolApiStyle = POOL_API_PUBLICPOOL;
-    poolAPIUrl = String(getPublicPool);
+    std::lock_guard<std::mutex> lock(s_poolApiMutex);
+    int style = POOL_API_PUBLICPOOL;
+    String url = String(getPublicPool);
     if (Settings.PoolAddress == "public-pool.io") {
-        poolAPIUrl = "https://public-pool.io:40557/api/client/";
+        url = "https://public-pool.io:40557/api/client/";
     }
     else if (Settings.PoolAddress.indexOf("hmpool.io") >= 0) {
         // hmpool has regional stratum endpoints (btc.hmpool.io,
         // eu.btc.hmpool.io, ...) but the stats API is centralized and
         // region-agnostic — confirmed live against a wallet connected via
         // the EU stratum endpoint. GET https://btc.hmpool.io/api/miner/<address>
-        poolAPIUrl = "https://btc.hmpool.io/api/miner/";
-        poolApiStyle = POOL_API_HMPOOL;
+        url = "https://btc.hmpool.io/api/miner/";
+        style = POOL_API_HMPOOL;
     }
     else if (Settings.PoolAddress.indexOf("heliospool.") >= 0) {
         // heliospool.com/heliospool-api: each region's server publishes its
         // own stats at https://api-{coin}-{region}.heliospool.com/users/<address>
         // (the old btc.heliospool.{com,eu,asia}/api/users path is gone -- those
         // hosts are now stratum-only and 443 just times out).
-        poolAPIUrl = "https://api-btc-" + getHeliosRegion() + ".heliospool.com/users/";
-        poolApiStyle = POOL_API_CKPOOL;
+        url = "https://api-btc-" + getHeliosRegion() + ".heliospool.com/users/";
+        style = POOL_API_CKPOOL;
     }
     else {
         if (Settings.PoolAddress == "pool.nerdminers.org") {
             // Runs a ckpool-solo fork (golden-guy/ckpool-solo@nerdminer_v2);
             // its per-user JSON at this same /users/<address> path uses the
             // same hashrate1hr/workers/bestever fields as heliospool.
-            poolAPIUrl = "https://pool.nerdminers.org/users/";
-            poolApiStyle = POOL_API_CKPOOL;
+            url = "https://pool.nerdminers.org/users/";
+            style = POOL_API_CKPOOL;
         }
         else {
             switch (Settings.PoolPort) {
                 case 3333:
                     if (Settings.PoolAddress == "pool.sethforprivacy.com")
-                        poolAPIUrl = "https://pool.sethforprivacy.com/api/client/";
+                        url = "https://pool.sethforprivacy.com/api/client/";
                     if (Settings.PoolAddress == "pool.solomining.de")
-                        poolAPIUrl = "https://pool.solomining.de/api/client/";
+                        url = "https://pool.solomining.de/api/client/";
                     // Add more cases for other addresses with port 3333 if needed
                     break;
                 case 2018:
                     // Local instance of public-pool.io on Umbrel or Start9
-                    poolAPIUrl = "http://" + Settings.PoolAddress + ":2019/api/client/";
+                    url = "http://" + Settings.PoolAddress + ":2019/api/client/";
                     break;
                 default:
-                    poolAPIUrl = String(getPublicPool);
+                    url = String(getPublicPool);
                     break;
             }
         }
     }
-    return poolAPIUrl;
+    poolApiStyle = style;
+    poolAPIUrl = url;
+    return url;
 }
 
 pool_data getPoolData(void){
@@ -529,13 +598,26 @@ pool_data getPoolData(void){
           String btcWallet = Settings.BtcWallet;
           // Serial.println(btcWallet);
           if (btcWallet.indexOf(".")>0) btcWallet = btcWallet.substring(0,btcWallet.indexOf("."));
+          int apiStyle = POOL_API_PUBLICPOOL;
 #ifdef SCREEN_WORKERS_ENABLE
-          // setup_monitor() may have run before WiFi was up, leaving heliospool's
-          // region unresolved; retry until it sticks.
-          if (poolApiStyle == POOL_API_CKPOOL && Settings.PoolAddress.indexOf("heliospool.") >= 0 && heliosRegion.isEmpty())
-              poolAPIUrl = getPoolAPIUrl();
-          Serial.println("Pool API : " + poolAPIUrl+btcWallet);
-          http.begin(client, poolAPIUrl+btcWallet);
+          // setup_monitor() runs before the stratum connection exists (and
+          // may not have run at all yet), and that connection can move to
+          // another region's server later: work the URL out again whenever
+          // it is missing or heliospool's region isn't current.
+          const bool heliosPool = Settings.PoolAddress.indexOf("heliospool.") >= 0;
+          String apiUrl;
+          {
+              std::lock_guard<std::mutex> lock(s_poolApiMutex);
+              apiUrl = poolAPIUrl;
+              apiStyle = poolApiStyle;
+          }
+          if (apiUrl.isEmpty() || (heliosPool && heliosRegionStale())) {
+              apiUrl = getPoolAPIUrl();
+              std::lock_guard<std::mutex> lock(s_poolApiMutex);
+              apiStyle = poolApiStyle;
+          }
+          Serial.println("Pool API : " + apiUrl+btcWallet);
+          http.begin(client, apiUrl+btcWallet);
 #else
           http.begin(client, String(getPublicPool)+btcWallet);
 #endif
@@ -551,7 +633,7 @@ pool_data getPoolData(void){
               String payload = http.getString();
               // Serial.println(payload);
               double temp;
-              if (poolApiStyle == POOL_API_CKPOOL) {
+              if (apiStyle == POOL_API_CKPOOL) {
                 // ckpool-solo family (heliospool, nerdminers.org):
                 // { "bestever": N, "workers": N, "hashrate1hr": "1041G", ... }
                 // "workers" here is already a count, and hashrate1hr is a
@@ -571,7 +653,7 @@ pool_data getPoolData(void){
                   pData.bestDifficulty = String(best_diff_string);
                 }
                 doc.clear();
-              } else if (poolApiStyle == POOL_API_HMPOOL) {
+              } else if (apiStyle == POOL_API_HMPOOL) {
                 // hmpool: { "best_share_difficulty": N, "workers": [{"hashrate": N}, ...] }
                 // (hmpool's top-level "best_difficulty" is the current
                 // VarDiff target, not a best-ever share, so it's not used here.)
@@ -628,6 +710,10 @@ pool_data getPoolData(void){
                 doc.clear();
               }
               mPoolUpdate = millis();
+#ifdef SCREEN_WORKERS_ENABLE
+              if (heliosPool && heliosJudgeAnswer(httpCode, pData.workersCount))
+                  mPoolUpdate = millis() - (UPDATE_POOL_min * 60 * 1000 - HELIOS_RETRY_ms);
+#endif
               Serial.println("\n####### Pool Data OK!");
           } else {
               Serial.println("\n####### Pool Data HTTP Error!");
@@ -639,6 +725,10 @@ pool_data getPoolData(void){
               // enough to trip some pools' WAF/anti-abuse rate limiting and
               // turn a transient failure into a permanent one.
               mPoolUpdate = millis();
+#ifdef SCREEN_WORKERS_ENABLE
+              if (heliosPool && heliosJudgeAnswer(httpCode, 0))
+                  mPoolUpdate = millis() - (UPDATE_POOL_min * 60 * 1000 - HELIOS_RETRY_ms);
+#endif
               pData.bestDifficulty = "P";
               pData.workersHash = "E";
               pData.workersCount = 0;
