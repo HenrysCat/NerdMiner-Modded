@@ -37,6 +37,8 @@ extern DisplayDriver tDisplayDriver;
 extern DisplayDriver amoledDisplayDriver;
 extern DisplayDriver dongleDisplayDriver;
 extern DisplayDriver esp32_2432S028RDriver;
+extern DisplayDriver es3c35pDriver;
+extern DisplayDriver esp32_4inDriver;
 extern DisplayDriver t_qtDisplayDriver;
 extern DisplayDriver tDisplayV1Driver;
 extern DisplayDriver m5stickCDriver;

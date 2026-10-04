@@ -18,6 +18,28 @@
 // SHA active (e.g. the pool-stats HTTPS fetch) must hold it too.
 extern std::mutex g_hwShaMutex;
 
+// ESP32-S3 overlapped HW loop only (PIPELINED_S3_MINING). On the S3 every
+// mbedTLS hash (the coinbase and merkle hashes of a new job, TLS handshakes)
+// goes through the one SHA engine, which that loop holds almost all the time:
+// a task that wants the engine would otherwise wait for the end of the
+// miner's current chunk for every single hash, and a new job would take
+// seconds to prepare. A task that is about to use the engine puts
+// HW_SHA_REQUEST() in the scope doing so; the miner looks at the count every
+// 256 nonces and stays off the engine until it is back to zero. Expands to
+// nothing in every other build.
+#if defined(PIPELINED_S3_MINING)
+#include <atomic>
+extern std::atomic<int> g_hwShaWanted;
+struct HwShaRequest
+{
+  HwShaRequest() { g_hwShaWanted++; }
+  ~HwShaRequest() { g_hwShaWanted--; }
+};
+#define HW_SHA_REQUEST() HwShaRequest hwShaRequest_
+#else
+#define HW_SHA_REQUEST()
+#endif
+
 // Mining
 #define MAX_NONCE_STEP  5000000U
 #define MAX_NONCE       25000000U
@@ -49,7 +71,10 @@ extern std::mutex g_hwShaMutex;
 //                                       status polling
 //   src/pipelined_hw_sha_classic.cpp    the original BUSY-polling loop, ported
 //                                       (MIT license, same upstream) from
-//                                       dwespl/nerdminer-axehub; last fallback
+//                                       dwespl/nerdminer-axehub
+//   pl_mine_plain (mining.cpp)          the non-pipelined loop; last fallback,
+//                                       and the only one used on chips before
+//                                       revision 3
 // Every candidate is still recomputed with the software nerd_sha256d_baked()
 // path before being trusted, so a bug in the asm can only cost a missed
 // share, never a bad submission. Only affects CONFIG_IDF_TARGET_ESP32

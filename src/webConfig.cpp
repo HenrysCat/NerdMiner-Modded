@@ -76,6 +76,11 @@ static void handleRoot()
   page += "<label><input type='checkbox' name='flip' " + String(Settings.flipDisplay ? "checked" : "") + "> Flip display (USB on the left)</label>";
   page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
 #endif
+#if defined(ES3C35P) || defined(ESP32_4IN_ST7796)
+  page += "<label><input type='checkbox' name='invert' " + String(Settings.invertColors ? "checked" : "") + "> Invert display colors</label>";
+  page += "<label><input type='checkbox' name='flip' " + String(Settings.flipDisplay ? "checked" : "") + "> Flip display (rotate 180 degrees)</label>";
+  page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
+#endif
   page += F("<input type='submit' value='Save &amp; Restart'>"
             "</form></body></html>");
 
@@ -101,6 +106,12 @@ static void handleSave()
     Settings.Currency = currencyFor(webCfgServer.arg("currency")).code;
   Settings.saveStats = webCfgServer.hasArg("savestats");
 #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
+  Settings.invertColors = webCfgServer.hasArg("invert");
+  Settings.flipDisplay = webCfgServer.hasArg("flip");
+  if (webCfgServer.hasArg("brightness"))
+    Settings.Brightness = webCfgServer.arg("brightness").toInt();
+#endif
+#if defined(ES3C35P) || defined(ESP32_4IN_ST7796)
   Settings.invertColors = webCfgServer.hasArg("invert");
   Settings.flipDisplay = webCfgServer.hasArg("flip");
   if (webCfgServer.hasArg("brightness"))

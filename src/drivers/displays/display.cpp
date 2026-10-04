@@ -40,6 +40,14 @@ DisplayDriver *currentDisplayDriver = &esp32_2432S028RDriver;
 DisplayDriver *currentDisplayDriver = &esp32_2432S028RDriver;
 #endif
 
+#ifdef ES3C35P_DISPLAY
+DisplayDriver *currentDisplayDriver = &es3c35pDriver;
+#endif
+
+#ifdef ESP32_4IN_ST7796_DISPLAY
+DisplayDriver *currentDisplayDriver = &esp32_4inDriver;
+#endif
+
 #ifdef T_QT_DISPLAY
 DisplayDriver *currentDisplayDriver = &t_qtDisplayDriver;
 #endif

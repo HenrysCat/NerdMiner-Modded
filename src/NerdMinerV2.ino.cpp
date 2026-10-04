@@ -24,6 +24,14 @@
 #include <soc/soc_caps.h>
 //#define HW_SHA256_TEST
 
+// ESP32-S3 with the overlapped HW mining loop (PIPELINED_S3_MINING): same
+// task layout as the classic ESP32 below -- the HW miner alone on core 1 at
+// high priority, everything else (monitor, stratum, the SW miner, and through
+// ARDUINO_RUNNING_CORE=0 in the env also the Arduino loop) on core 0.
+#if defined(PIPELINED_S3_MINING) && defined(CONFIG_IDF_TARGET_ESP32S3)
+#define S3_HW_MINER_OWNS_CORE1
+#endif
+
 //3 seconds WDT
 #define WDT_TIMEOUT 3
 //15 minutes WDT for miner task
@@ -80,6 +88,11 @@ void setup()
   // SHA engine characterisation bench instead of the miner (src/sha_bench.cpp)
   extern void sha_bench_run();
   sha_bench_run();
+#endif
+#ifdef SHA_BENCH_S3
+  // Same for the ESP32-S3 engine (src/sha_bench_s3.cpp)
+  extern void sha_bench_s3_run();
+  sha_bench_s3_run();
 #endif
 
   esp_task_wdt_init(WDT_MINER_TIMEOUT, true);
@@ -147,6 +160,8 @@ void setup()
   // xTaskCreatePinnedToCore call below for why sharing a core with it at
   // any priority regresses hashrate.
   BaseType_t res1 = xTaskCreatePinnedToCore(runMonitor, "Monitor", 9500, (void*)monitor_name, 5, NULL,0);
+  #elif defined(S3_HW_MINER_OWNS_CORE1)
+  BaseType_t res1 = xTaskCreatePinnedToCore(runMonitor, "Monitor", 10000, (void*)monitor_name, 5, NULL,0);
   #else
   BaseType_t res1 = xTaskCreatePinnedToCore(runMonitor, "Monitor", 10000, (void*)monitor_name, 5, NULL,1);
   #endif
@@ -163,6 +178,8 @@ void setup()
   // Core 0: see Monitor's task-creation comment above -- core 1 is
   // reserved exclusively for the HW pipelined mining hot loop.
   BaseType_t res2 = xTaskCreatePinnedToCore(runStratumWorker, "Stratum", 13500, (void*)stratum_name, 4, NULL,0);
+ #elif defined(S3_HW_MINER_OWNS_CORE1)
+  BaseType_t res2 = xTaskCreatePinnedToCore(runStratumWorker, "Stratum", 15000, (void*)stratum_name, 4, NULL,0);
  #else
   BaseType_t res2 = xTaskCreatePinnedToCore(runStratumWorker, "Stratum", 15000, (void*)stratum_name, 4, NULL,1);
  #endif
@@ -191,6 +208,8 @@ void setup()
     // here rather than assuming its literal core number transfers over.
     xTaskCreatePinnedToCore(minerWorkerHw, "MinerHw-0", 3584, (void*)0, 19, &minerTask1, 1); // Reduced for ESP32 classic
     //xTaskCreate(minerWorkerSw, "MinerSw-0", 5000, (void*)0, 1, &minerTask1); // Reduced for ESP32 classic
+    #elif defined(S3_HW_MINER_OWNS_CORE1)
+    xTaskCreatePinnedToCore(minerWorkerHw, "MinerHw-0", 4096, (void*)0, 19, &minerTask1, 1);
     #else
     xTaskCreate(minerWorkerHw, "MinerHw-0", 4096, (void*)0, 3, &minerTask1);
     #endif
@@ -209,6 +228,8 @@ void setup()
   // Stratum there) so core 1 stays fully exclusive to the HW pipelined hot
   // loop -- not even a low-priority task's occasional tick should share it.
   xTaskCreatePinnedToCore(minerWorkerSw, "MinerSw-1", 5000, (void*)1, 1, &minerTask2, 0); // Reduced for ESP32 classic
+  #elif defined(S3_HW_MINER_OWNS_CORE1)
+  xTaskCreatePinnedToCore(minerWorkerSw, "MinerSw-1", 6000, (void*)1, 1, &minerTask2, 0);
   #else
   xTaskCreate(minerWorkerSw, "MinerSw-1", 6000, (void*)1, 1, &minerTask2);
   #endif

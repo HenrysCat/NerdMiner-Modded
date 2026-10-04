@@ -52,6 +52,7 @@
 #if defined(CONFIG_IDF_TARGET_ESP32)
 #include <sha/sha_parallel_engine.h>
 #include <driver/periph_ctrl.h>
+#include <hal/efuse_hal.h>
 #endif
 
 #endif
@@ -213,6 +214,9 @@ struct JobResult
 
 static std::mutex s_job_mutex;
 std::mutex g_hwShaMutex;  // see mining.h for why this exists
+#if defined(PIPELINED_S3_MINING)
+std::atomic<int> g_hwShaWanted{0}; // see mining.h
+#endif
 std::list<std::shared_ptr<JobRequest>> s_job_request_list_sw;
 #ifdef HARDWARE_SHA265
 std::list<std::shared_ptr<JobRequest>> s_job_request_list_hw;
@@ -420,6 +424,7 @@ void runStratumWorker(void *name) {
                                           hashes -= mh*1000000;
 
                                           //Prepare data for new jobs
+                                          HW_SHA_REQUEST(); // S3: the hashes below need the engine the HW miner is holding
                                           mMiner=calculateMiningData(mWorker, mJob);
 
                                           memset(mMiner.bytearray_blockheader+80, 0, 128-80);
@@ -858,6 +863,128 @@ static inline void nerd_sha_hal_wait_idle()
     {}
 }
 
+#if defined(PIPELINED_S3_MINING) && defined(CONFIG_IDF_TARGET_ESP32S3)
+// Overlapped ESP32-S3 mining loop (build flag PIPELINED_S3_MINING).
+//
+// Measured on the chip (src/sha_bench_s3.cpp): a block computes in ~150 CPU
+// cycles, but every register access crosses the 80 MHz peripheral bus (~12
+// cycles per store, ~24 per load), so the loop above spends most of its ~1080
+// cycles per nonce on register traffic. The engine latches TEXT at the
+// trigger and leaves the registers untouched, which allows two savings:
+//   - the next block's TEXT is written while the current block computes;
+//   - only the words that differ between the two blocks are written.
+// Result: ~740 cycles per nonce (324 KH/s against 222), every hash checked.
+//
+// Tries `count` nonces from `nonce`. Returns how many were done; *hit is set
+// when the last of them has the 16 zero bits of a candidate (the caller
+// recomputes that one in software).
+static uint32_t __attribute__((noinline, optimize("O2")))
+s3_pl_mine(const uint32_t *mid, const uint32_t *tail, uint32_t nonce, uint32_t count, bool *hit)
+{
+  volatile uint32_t *const text = (volatile uint32_t *)SHA_TEXT_BASE;
+  volatile uint32_t *const h = (volatile uint32_t *)SHA_H_BASE;
+  volatile uint32_t *const busy = (volatile uint32_t *)SHA_BUSY_REG;
+  const uint32_t m0 = mid[0], m1 = mid[1], m2 = mid[2], m3 = mid[3], m4 = mid[4], m5 = mid[5], m6 = mid[6],
+                 m7 = mid[7];
+  const uint32_t t0 = tail[0], t1 = tail[1], t2 = tail[2];
+
+  // Second block of the header for the first nonce
+  text[0] = t0;
+  text[1] = t1;
+  text[2] = t2;
+  text[3] = nonce;
+  text[4] = 0x00000080;
+  for (int i = 5; i < 15; ++i)
+    text[i] = 0;
+  text[15] = 0x80020000;
+
+  for (uint32_t i = 0; i < count; ++i)
+  {
+    h[0] = m0; // midstate of the header's first block
+    h[1] = m1;
+    h[2] = m2;
+    h[3] = m3;
+    h[4] = m4;
+    h[5] = m5;
+    h[6] = m6;
+    h[7] = m7;
+    REG_WRITE(SHA_CONTINUE_REG, 1); // first hash
+    text[8] = 0x00000080;           // meanwhile: the fixed words of the second hash's block
+    text[15] = 0x00010000;          // (9..14 are zero in both blocks)
+    while (*busy)
+    {
+    }
+    text[0] = h[0];
+    text[1] = h[1];
+    text[2] = h[2];
+    text[3] = h[3];
+    text[4] = h[4];
+    text[5] = h[5];
+    text[6] = h[6];
+    text[7] = h[7];
+    REG_WRITE(SHA_START_REG, 1); // second hash
+    text[0] = t0;                // meanwhile: the header block for the next nonce
+    text[1] = t1;
+    text[2] = t2;
+    text[3] = nonce + i + 1;
+    text[4] = 0x00000080;
+    text[5] = 0;
+    text[6] = 0;
+    text[7] = 0;
+    text[8] = 0;
+    text[15] = 0x80020000;
+    while (*busy)
+    {
+    }
+    if ((h[7] >> 16) == 0)
+    {
+      *hit = true;
+      return i + 1;
+    }
+  }
+  *hit = false;
+  return count;
+}
+
+// Known-answer test: for the header hdr[i] = i * 37 + 11, these are the only
+// candidates among the 131072 nonces from 0x1000 up. The loop passes if it
+// reports exactly these, in order.
+static bool s3_pl_selftest()
+{
+  static const uint32_t expected[] = {0x642c, 0x66ce, 0x731b, 0x7697, 0x1478f};
+  const uint32_t first = 0x1000, last = first + 131072;
+  uint8_t hdr[80];
+  uint32_t mid[8];
+  for (int i = 0; i < 80; ++i)
+    hdr[i] = (uint8_t)(i * 37 + 11);
+
+  g_hwShaMutex.lock();
+  esp_sha_acquire_hardware();
+  sha_hal_hash_block(SHA2_256, hdr, 64 / 4, true);
+  sha_hal_read_digest(SHA2_256, mid);
+  REG_WRITE(SHA_MODE_REG, SHA2_256);
+  size_t found = 0;
+  bool ok = true;
+  uint32_t n = first;
+  while (n != last)
+  {
+    bool hit = false;
+    n += s3_pl_mine(mid, (const uint32_t *)(hdr + 64), n, last - n, &hit);
+    if (!hit)
+      break;
+    if (found >= sizeof(expected) / sizeof(expected[0]) || expected[found] != n - 1)
+    {
+      ok = false;
+      break;
+    }
+    found++;
+  }
+  esp_sha_release_hardware();
+  g_hwShaMutex.unlock();
+  return ok && found == sizeof(expected) / sizeof(expected[0]);
+}
+#endif // PIPELINED_S3_MINING
+
 //#define VALIDATION
 void minerWorkerHw(void * task_id)
 {
@@ -871,6 +998,13 @@ void minerWorkerHw(void * task_id)
   uint8_t digest_mid[32];
   uint8_t sha_buffer[64];
   uint32_t wdt_counter = 0;
+
+#if defined(PIPELINED_S3_MINING) && defined(CONFIG_IDF_TARGET_ESP32S3)
+  // Best of three, so one disturbed run does not cost the fast loop for the
+  // whole uptime; without it the loop below is used.
+  const bool s3_pl_ok = s3_pl_selftest() || s3_pl_selftest() || s3_pl_selftest();
+  Serial.printf("[MINER] HW SHA loop: %s\n", s3_pl_ok ? "overlapped" : "stock (the overlapped loop failed its self-test)");
+#endif
 
 #ifdef VALIDATION
   uint8_t doubleHash[32];
@@ -914,6 +1048,100 @@ void minerWorkerHw(void * task_id)
       esp_sha_acquire_hardware();
       REG_WRITE(SHA_MODE_REG, SHA2_256);
       uint32_t nend = job->nonce_start + job->nonce_count;
+#if defined(PIPELINED_S3_MINING) && defined(CONFIG_IDF_TARGET_ESP32S3)
+      if (s3_pl_ok)
+      {
+        // Software midstate of this job, to recompute candidates with
+        uint32_t sw_mid[8], sw_bake[16];
+        nerd_mids(sw_mid, job->sha_buffer);
+        nerd_sha256_bake(sw_mid, job->sha_buffer + 64, sw_bake);
+
+        uint32_t n = job->nonce_start;
+        uint32_t reported = 0; // nonces already handed to the stratum task
+        while (n != nend)
+        {
+          // Up to the next multiple of 256, where the job is checked for staleness
+          uint32_t want = 256 - (n & 0xFF);
+          if (want > nend - n)
+            want = nend - n;
+          bool hit = false;
+          n += s3_pl_mine((const uint32_t *)digest_mid, (const uint32_t *)sha_buffer, n, want, &hit);
+
+          if (hit)
+          {
+            #ifdef DEBUG_MINING
+            debugPipelinedHits++;
+            #endif
+            const uint32_t cand = n - 1;
+            ((uint32_t *)(job->sha_buffer + 64 + 12))[0] = cand;
+            uint8_t sw_hash[32];
+            bool confirmed = nerd_sha256d_baked(sw_mid, job->sha_buffer + 64, sw_bake, sw_hash);
+            #ifdef DEBUG_MINING
+            if (confirmed)
+              debugPipelinedRealHits++;
+            else
+              debugPipelinedHwSwMismatch++;
+            #endif
+            if (confirmed && diff_from_target(sw_hash) > job->difficulty && isSha256Valid(sw_hash))
+            {
+              // A share: hand it over now, not when the chunk ends (a job
+              // change in between would void it).
+              #ifdef DEBUG_MINING
+              debugPipelinedAccepted++;
+              #endif
+              std::shared_ptr<JobResult> share = std::make_shared<JobResult>();
+              share->id = job->id;
+              share->nonce = cand;
+              share->nonce_count = 0;
+              share->difficulty = diff_from_target(sw_hash);
+              memcpy(share->hash, sw_hash, sizeof(sw_hash));
+              std::lock_guard<std::mutex> lock(s_job_mutex);
+              if (s_job_result_list.size() < 64) // only guards against a stuck stratum task
+                s_job_result_list.push_back(share);
+            }
+          }
+
+          const uint32_t done = n - job->nonce_start;
+          if (s_working_current_job_id != job_in_work)
+          {
+            nend = n; // stale job: stop here
+          }
+          else if (n != nend && g_hwShaWanted.load() != 0)
+          {
+            // Somebody else needs the engine (see mining.h): hand it over
+            // and stay away until they are done.
+            esp_sha_release_hardware();
+            g_hwShaMutex.unlock();
+            while (g_hwShaWanted.load() != 0)
+              vTaskDelay(1);
+            g_hwShaMutex.lock();
+            esp_sha_acquire_hardware();
+            REG_WRITE(SHA_MODE_REG, SHA2_256);
+            continue;
+          }
+          else if (n != nend && done - reported >= 32768)
+          {
+            // Count the work in small steps: a chunk takes most of a second
+            // here, and counting it only at its end makes the displayed
+            // hashrate jump between seconds with one chunk and with two.
+            std::shared_ptr<JobResult> progress = std::make_shared<JobResult>();
+            progress->id = job->id;
+            progress->nonce = 0xFFFFFFFF;
+            progress->nonce_count = done - reported;
+            progress->difficulty = job->difficulty;
+            reported = done;
+            std::lock_guard<std::mutex> lock(s_job_mutex);
+            if (s_job_result_list.size() < 64)
+              s_job_result_list.push_back(progress);
+          }
+        }
+        result->nonce_count = (n - job->nonce_start) - reported;
+        #ifdef DEBUG_MINING
+        debugHashesHw += n - job->nonce_start;
+        #endif
+      }
+      else
+#endif
       for (uint32_t n = job->nonce_start; n < nend; ++n)
       {
         #ifdef DEBUG_MINING
@@ -971,6 +1199,14 @@ void minerWorkerHw(void * task_id)
       }
       esp_sha_release_hardware();
       g_hwShaMutex.unlock();
+      #if defined(PIPELINED_S3_MINING) && defined(CONFIG_IDF_TARGET_ESP32S3)
+      // This task has its core to itself and would take the engine again
+      // within microseconds. Leave a real gap once per chunk for users of
+      // the engine that do not announce themselves (WiFi key handshakes go
+      // through mbedTLS too).
+      if (s3_pl_ok)
+        vTaskDelay(1);
+      #endif
     } else
       vTaskDelay(2 / portTICK_PERIOD_MS);
 
@@ -1151,12 +1387,49 @@ static uint32_t pl_mine_legacy(volatile uint32_t *sha_base, pl_ctx_t *ctx)
   return hit;
 }
 
+// The non-pipelined loop (same sequence as the #else branch in minerWorkerHw):
+// less than half the speed, but every read of a SHA (DPORT) register goes
+// through the SDK's DPORT workaround. The loops above read them raw, which
+// only chip revision 3 and later tolerate -- see pl_select_loop.
+static uint32_t pl_mine_plain(volatile uint32_t *sha_base, pl_ctx_t *ctx)
+{
+  uint8_t hash[32];
+  while (ctx->run && ctx->budget > 0)
+  {
+    nerd_sha_ll_fill_text_block_sha256(ctx->hdr);
+    sha_ll_start_block(SHA2_256);
+
+    nerd_sha_hal_wait_idle();
+    // ctx->nonce is already in the engine's byte order; the fill swaps its argument.
+    nerd_sha_ll_fill_text_block_sha256_upper(ctx->hdr + 16, __builtin_bswap32(ctx->nonce));
+    sha_ll_continue_block(SHA2_256);
+
+    nerd_sha_hal_wait_idle();
+    sha_ll_load(SHA2_256);
+
+    nerd_sha_hal_wait_idle();
+    nerd_sha_ll_fill_text_block_sha256_double();
+    sha_ll_start_block(SHA2_256);
+
+    nerd_sha_hal_wait_idle();
+    sha_ll_load(SHA2_256);
+
+    ctx->nonce++;
+    ctx->budget--;
+    if (nerd_sha_ll_read_digest_swap_if(hash))
+      return 1;
+  }
+  return 0;
+}
+
 static const struct { pl_mine_fn fn; const char *name; } s_pl_loops[] = {
   {pipelined_hw_mine_classic_v2,      "fast"},
   {pipelined_hw_mine_classic_v2_wide, "fast, wide margins"},
   {pl_mine_legacy,                    "polled"},
+  {pl_mine_plain,                     "plain"},
 };
 #define PL_LOOP_COUNT (sizeof(s_pl_loops) / sizeof(s_pl_loops[0]))
+#define PL_LOOP_PLAIN (PL_LOOP_COUNT - 1)
 static unsigned s_pl_loop = 0;
 
 // Known-answer test: for the header hdr[i] = 0x9E3779B9 * (i + 1), these are
@@ -1187,12 +1460,25 @@ static bool pl_selftest(pl_mine_fn fn)
 // Picks the fastest loop this chip runs correctly. The fast loops rely on
 // the engine's timing as measured on ESP32-D0WD-V3; anything that behaves
 // differently fails the known-answer test and drops to the next one.
+//
+// Chips before revision 3 are not offered the pipelined loops at all. Seen on
+// an ESP32-D0WDQ6 rev 1.1 (LilyGO T-Display): the fast loop passes the
+// self-test and hashes correctly, but within seconds core 0 stops (Monitor
+// goes silent, the WiFi stack asserts, no reboot). That matches the silicon
+// bug fixed in revision 3, where a raw DPORT read on one core corrupts APB
+// reads (UART, WiFi MAC, timers) on the other, so the self-test cannot see it.
 static void pl_select_loop()
 {
   g_hwShaMutex.lock();
   esp_sha_lock_engine(SHA2_256);
   periph_module_reset(PERIPH_SHA_MODULE);
   unsigned n = 0;
+  const unsigned chip_rev = efuse_hal_get_major_chip_version();
+  if (chip_rev < 3)
+  {
+    Serial.printf("[MINER] chip revision %u: the pipelined HW SHA loops need revision 3\n", chip_rev);
+    n = PL_LOOP_PLAIN;
+  }
   // Best of three: one stray candidate (a misread digest word) must not cost
   // the fast loop for the whole uptime.
   while (n + 1 < PL_LOOP_COUNT && !pl_selftest(s_pl_loops[n].fn) && !pl_selftest(s_pl_loops[n].fn) &&
@@ -1202,7 +1488,7 @@ static void pl_select_loop()
     n++;
   }
   #ifdef PL_FORCE_LOOP
-  n = PL_FORCE_LOOP; // A/B testing: 0 fast, 1 wide margins, 2 polled
+  n = PL_FORCE_LOOP; // A/B testing: 0 fast, 1 wide margins, 2 polled, 3 plain
   #endif
   s_pl_loop = n;
   esp_sha_unlock_engine(SHA2_256);
@@ -1596,6 +1882,10 @@ void runMonitor(void *name)
                       curHw - lastHw, curSw0 - lastSw0, curSw1 - lastSw1,
                       (curHw - lastHw) + (curSw0 - lastSw0) + (curSw1 - lastSw1));
         lastHw = curHw; lastSw0 = curSw0; lastSw1 = curSw1;
+        #if defined(PIPELINED_S3_MINING) && !defined(PIPELINED_ASM_MINING)
+        Serial.printf("[PLDBG] hits=%u real=%u mismatch=%u accepted=%u\n",
+                      debugPipelinedHits, debugPipelinedRealHits, debugPipelinedHwSwMismatch, debugPipelinedAccepted);
+        #endif
         #ifdef PIPELINED_ASM_MINING
         Serial.printf("[PLDBG] hits=%u real=%u mismatch=%u accepted=%u\n",
                       debugPipelinedHits, debugPipelinedRealHits, debugPipelinedHwSwMismatch, debugPipelinedAccepted);

@@ -93,7 +93,7 @@ void updateGlobalData(void){
         try {
         http.begin(getGlobalHash);
         int httpCode;
-        { std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
+        { HW_SHA_REQUEST(); std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
 
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
@@ -118,7 +118,7 @@ void updateGlobalData(void){
       
         //Make third API call to get fees
         http.begin(getFees);
-        { std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
+        { HW_SHA_REQUEST(); std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
 
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
@@ -159,7 +159,7 @@ String getBlockHeight(void){
         try {
         http.begin(getHeightAPI);
         int httpCode;
-        { std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
+        { HW_SHA_REQUEST(); std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
 
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
@@ -199,7 +199,7 @@ String getBTCprice(void){
         try {
         http.begin(String(getBTCAPI) + cur.code);
         int httpCode;
-        { std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
+        { HW_SHA_REQUEST(); std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
 
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
@@ -644,9 +644,13 @@ pool_data getPoolData(void){
           // esp_sha_lock_engine(SHA2_256) -- confirmed via a crash backtrace
           // showing abort() inside sha_hal_read_digest() when both ran
           // concurrently. g_hwShaMutex closes that gap; see mining.h.
-          g_hwShaMutex.lock();
-          int httpCode = http.GET();
-          g_hwShaMutex.unlock();
+          int httpCode;
+          {
+            HW_SHA_REQUEST();
+            g_hwShaMutex.lock();
+            httpCode = http.GET();
+            g_hwShaMutex.unlock();
+          }
           if (httpCode == HTTP_CODE_OK) {
               String payload = http.getString();
               // Serial.println(payload);
