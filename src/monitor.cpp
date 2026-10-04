@@ -43,8 +43,8 @@ String poolAPIUrl;
 // schemas. getPoolAPIUrl() sets this alongside poolAPIUrl so getPoolData()
 // knows how to parse whatever comes back.
 enum PoolApiStyle {
-  POOL_API_PUBLICPOOL = 0, // public-pool.io, sethforprivacy, solomining
-  POOL_API_HMPOOL,         // hmpool.io (HashedMax Unity Pool)
+  POOL_API_PUBLICPOOL = 0, // public-pool.io, sethforprivacy, solomining, hmpool.io (digi, bch)
+  POOL_API_HMPOOL,         // btc.hmpool.io (HashedMax Unity Pool)
   // ckpool-solo family: heliospool.com/.eu/.asia AND pool.nerdminers.org
   // (confirmed from nerdminers.org's own fork source, golden-guy/ckpool-solo
   // @nerdminer_v2 -- its per-user JSON uses the same hashrate1hr/workers/
@@ -531,12 +531,30 @@ String getPoolAPIUrl(void) {
         url = "https://public-pool.io:40557/api/client/";
     }
     else if (Settings.PoolAddress.indexOf("hmpool.io") >= 0) {
-        // hmpool has regional stratum endpoints (btc.hmpool.io,
-        // eu.btc.hmpool.io, ...) but the stats API is centralized and
-        // region-agnostic — confirmed live against a wallet connected via
-        // the EU stratum endpoint. GET https://btc.hmpool.io/api/miner/<address>
-        url = "https://btc.hmpool.io/api/miner/";
-        style = POOL_API_HMPOOL;
+        // hmpool runs one pool per coin (btc.hmpool.io, bch.hmpool.io,
+        // digi.hmpool.io), each with its own stats API: asking the btc one
+        // about a DGB address answers 200 with an empty worker list. Within
+        // a coin the regional stratum endpoints (eu.btc.hmpool.io,
+        // eu.digi.hmpool.io, ...) share one set of stats -- confirmed live
+        // on both btc and digi -- so the region prefix is dropped.
+        String coin = "btc";
+        const int coinEnd = Settings.PoolAddress.indexOf(".hmpool.io");
+        if (coinEnd > 0)
+            coin = Settings.PoolAddress.substring(Settings.PoolAddress.lastIndexOf('.', coinEnd - 1) + 1, coinEnd);
+        if (coin == "btc") {
+            // GET https://btc.hmpool.io/api/miner/<address>: hmpool's own
+            // schema. It groups workers by name, so several miners sharing
+            // one worker name count as one.
+            url = "https://btc.hmpool.io/api/miner/";
+            style = POOL_API_HMPOOL;
+        } else {
+            // The digi and bch pools also answer the public-pool schema at
+            // /api/client/<address> (btc has no such route: 404). It lists
+            // one entry per live connection, so every miner is counted even
+            // when they share a worker name, and it is a fraction of the
+            // size of /api/miner.
+            url = "https://" + coin + ".hmpool.io/api/client/";
+        }
     }
     else if (Settings.PoolAddress.indexOf("heliospool.") >= 0) {
         // heliospool.com/heliospool-api: each region's server publishes its
@@ -654,20 +672,26 @@ pool_data getPoolData(void){
                 }
                 doc.clear();
               } else if (apiStyle == POOL_API_HMPOOL) {
-                // hmpool: { "best_share_difficulty": N, "workers": [{"hashrate": N}, ...] }
+                // hmpool: { "best_share_difficulty": N, "workers": [{"active": B, "hashrate": N}, ...] }
                 // (hmpool's top-level "best_difficulty" is the current
                 // VarDiff target, not a best-ever share, so it's not used here.)
+                // "workers" also lists ones that have gone offline
+                // ("active": false, hashrate 0); only live ones are counted.
                 StaticJsonDocument<300> filter;
                 filter["best_share_difficulty"] = true;
+                filter["workers"][0]["active"] = true;
                 filter["workers"][0]["hashrate"] = true;
                 StaticJsonDocument<2048> doc;
                 deserializeJson(doc, payload, DeserializationOption::Filter(filter));
                 const JsonArray& workers = doc["workers"].as<JsonArray>();
-                pData.workersCount = workers.size();
+                int activeWorkers = 0;
                 float totalhashs = 0;
                 for (const JsonObject& worker : workers) {
+                  if (!(worker["active"] | true)) continue;
+                  activeWorkers++;
                   totalhashs += worker["hashrate"].as<double>();
                 }
+                pData.workersCount = activeWorkers;
                 char totalhashs_s[16] = {0};
                 suffix_string(totalhashs, totalhashs_s, 16, 0);
                 pData.workersHash = String(totalhashs_s);
@@ -679,7 +703,7 @@ pool_data getPoolData(void){
                 }
                 doc.clear();
               } else {
-                // public-pool.io, nerdminers.org, sethforprivacy, solomining
+                // public-pool.io, sethforprivacy, solomining, hmpool (digi, bch)
                 StaticJsonDocument<300> filter;
                 filter["bestDifficulty"] = true;
                 filter["workersCount"] = true;
