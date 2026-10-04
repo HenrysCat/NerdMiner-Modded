@@ -11,8 +11,6 @@ The main aim of this project is to let you **learn more about minery** and to ha
 Original NerdMiner_v2 project https://github.com/BitMaker-hub/NerdMiner_v2
 (which itself started from https://github.com/valerio-vaccaro/HAN)
 
-![image](images/bgNerdMinerV2.png)
-
 ## What's different in this mod
 
 ![NerdMiner Modded running on a CYD](images/nerdminer-mod.gif)
