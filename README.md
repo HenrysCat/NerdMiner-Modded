@@ -15,13 +15,14 @@ Original NerdMiner_v2 project https://github.com/BitMaker-hub/NerdMiner_v2
 
 ![NerdMiner Modded running on a CYD](images/nerdminer-mod.gif)
 
-> **⚠️ Tested on the CYD only.** All changes in this fork have so far been developed and tested on a single board: the **ESP32-2432S028R ("Cheap Yellow Display", CYD)**. Other boards still build from the same code base as the original, but they have **not** been tested with these changes. Expect rough edges, and please report what you find.
+> **⚠️ Tested on the CYD only.** The changes in this fork have been developed and tested on two boards: the **ESP32-2432S028R (2.8" "Cheap Yellow Display", CYD)** and the **4.0" CYD with the 320x480 ST7796 panel**. Other boards still build from the same code base as the original, but they have **not** been tested with these changes. Expect rough edges, and please report what you find.
 
 - **High hashrate on the CYD** – the SHA-256 mining path for the classic ESP32 has been reworked to use the hardware SHA engine in a pipelined fashion, giving a sustained rate of roughly **950 KH/s** on the CYD (classic ESP32, both cores mining). Changes to the mining code are validated hash by hash against software, so the extra speed is not coming at the cost of invalid shares.
 - **New "Pulse" display theme** – the CYD UI has been completely redesigned. It is bitmap-free and has three screens: **MINE**, **MARKET** and **CLOCK**. Tap the wordmark to cycle the accent colour, and tap the top-right corner to toggle the backlight.
+- **4.0" CYD support** – the 4.0" 320x480 ST7796 variant of the CYD (ESP32-WROOM-32E, resistive touch) has its own build, `ESP32-4in-ST7796`: the same ~950 KH/s and the Pulse theme laid out for the larger 480x320 screen.
 - **Classic theme still available** – prefer the original look? Build the `ESP32-2432S028R-Classic` environment (`pio run -e ESP32-2432S028R-Classic -t upload`).
 - **BTC price in your currency** – choose which fiat currency the BTC price is shown in from the web settings page.
-- **Improved web settings page** – the settings page stays reachable while mining, and now also has options for display flip (USB on the left), colour inversion, brightness and currency. After saving it waits for the device to restart and returns to the settings page automatically.
+- **Improved web settings page** – the settings page stays reachable while mining, and now also has options for display flip (USB on the left), colour inversion, brightness and currency. After saving it waits for the device to restart and returns to the settings page automatically. See [Web settings page](#web-settings-page) for how to log in.
 
 ### Why this hashrate is real
 
@@ -77,6 +78,7 @@ Every time an stratum job notification is received miner update its current work
 - LILYGO T-Display S3 AMOLED Touch ([Board Info](https://www.lilygo.cc/products/t-display-s3-amoled?variant=43532279939253))
 - LILYGO T-Dongle S3 ([Aliexpress link\*](https://s.click.aliexpress.com/e/_DmQCPyj))
 - ESP32-2432S028R 2,8" ([Aliexpress link\*](https://s.click.aliexpress.com/e/_DdXkvLv) / Dev support: @nitroxgas / ⚡jadeddonald78@walletofsatoshi.com)
+- 4.0" CYD, 320x480 ST7796 (ESP32-WROOM-32E, build environment `ESP32-4in-ST7796`)
 - ESP32-cam ([Board Info](https://lastminuteengineers.com/getting-started-with-esp32-cam/) / Dev support: @elmo128)
 - M5-StampS3 ([Aliexpress link\*](https://s.click.aliexpress.com/e/_DevABY3) / Dev support: @gyengus)
 - Wemos Lolin S3 Mini ([Board Info](https://docs.platformio.org/en/latest/boards/espressif32/lolin_s3_mini.html))
@@ -95,7 +97,7 @@ Every time an stratum job notification is received miner update its current work
 
 ### Flash firmware
 
-> **Flashing NerdMiner Modded:** use the web flasher at **https://henryscat.github.io/NerdMiner-Modded/** (Chrome, Edge or Brave). It offers a *full install* (factory image: bootloader, partition table and firmware, for a first flash) and a *firmware-only update* (keeps your settings). You can also build and flash this repository with PlatformIO, e.g. `pio run -e ESP32-2432S028R -t upload`.
+> **Flashing NerdMiner Modded:** use the web flasher at **https://henryscat.github.io/NerdMiner-Modded/** (Chrome, Edge or Brave). It offers a *full install* (factory image: bootloader, partition table and firmware, for a first flash) and a *firmware-only update* (keeps your settings). Pick your board there first: the 2.8" CYD (ESP32-2432S028R) or the 4.0" CYD (320x480 ST7796). You can also build and flash this repository with PlatformIO, e.g. `pio run -e ESP32-2432S028R -t upload` for the 2.8" board or `pio run -e ESP32-4in-ST7796 -t upload` for the 4.0" one.
 >
 > The online flasher and the prebuilt binaries in the sections below come from the **original** project and will install the original firmware, not the modded one.
 
@@ -147,6 +149,18 @@ Note: when BTC address of your selected wallet is not provided, mining will not 
 
    - If you are using public-pool.io and you want to set a custom name to your worker you can append a string with format _.yourworkername_ to the address
 
+
+#### Web settings page
+
+Once the miner is on your Wifi network it serves a settings page, also while it is mining, so you can change the pool, wallet, timezone, currency and display options without going back to the setup access point.
+
+1. Open `http://<miner IP address>/` in a browser on the same network. On the CYD the IP address is shown at the top of the screen; it is also printed on the serial log at start-up and listed by your router.
+1. Log in when the browser asks:
+   - User: admin
+   - Password: MineYourCoins
+1. Change what you need and press **Save & Restart**. The miner restarts with the new settings and the page comes back by itself.
+
+Note: the login is the same on every miner (the password is the one of the setup access point) and the page is plain HTTP, so only use it on a network you trust.
 
 #### SD card (if available)
 
