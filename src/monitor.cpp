@@ -342,6 +342,10 @@ String getCurrentHashRate(unsigned long mElapsed)
     case HashRateScale_999KH:
       return String(avg_hashrate, 1);
     default:
+      // No room for a decimal from 1 MH/s up, but a miner that hovers around
+      // it keeps the decimal whenever it reads below.
+      if (avg_hashrate < 999.95)
+        return String(avg_hashrate, 1);
       return String((int)avg_hashrate );
   }
 }
