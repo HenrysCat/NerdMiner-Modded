@@ -31,11 +31,14 @@
 //    delay that is long enough when nothing else runs is always long enough.
 //
 // The delay constants are the measured thresholds under worst-case core-0
-// bus traffic plus two cycles (three over the quiet thresholds). Any change
-// here has to go back through the bench: SHA_BENCH=2 runs every variant in
-// sha_bench_variants.inc against software, hash by hash, under each stress
-// mode. A threshold missed by one cycle shows up there, not in a hashrate
-// counter.
+// bus traffic (one over the quiet thresholds), with no cycles to spare: all
+// timing here is counted in clock cycles of one synchronous chip, and that
+// schedule ran ~23 million bench hashes under every stress mode without a
+// wrong one. The schedule with two cycles more on every trigger delay is
+// kept as the first fallback. Any change here has to go back through the
+// bench: SHA_BENCH=2 runs every variant in sha_bench_variants.inc against
+// software, hash by hash, under each stress mode. A threshold missed by one
+// cycle shows up there, not in a hashrate counter.
 //
 // uint32_t fn(volatile uint32_t *sha_text_base, pl_ctx_t *ctx)
 //   Returns 1 on a candidate (low 16 bits of the digest's last word zero;
@@ -238,10 +241,14 @@
 
     // Measured thresholds (quiet / worst-case core-0 bus traffic):
     //   p1 3/4, p2 39/40, pl1 9/10, p3 26/27, pl2 9/10, d2 12, d3 8.
-    PL_MINE pipelined_hw_mine_classic_v2,      .iram1.plmine2,  6, 16, 42, 12, 14, 29, 12, 2, 1, 0
-    // Same schedule with 12 more cycles on every delay: the fallback if the
-    // power-on self-test of the fast one fails (see pl_selftest in mining.cpp).
-    PL_MINE pipelined_hw_mine_classic_v2_wide, .iram1.plmine2w, 18, 16, 54, 24, 14, 41, 24, 2, 1, 0
+    // 247 cycles per nonce.
+    PL_MINE pipelined_hw_mine_classic_v2,        .iram1.plmine2,   4, 16, 40, 10, 14, 27, 10, 2, 1, 0
+    // The same with 2 and with 14 more cycles on every trigger delay (257 and
+    // 317 cycles per nonce): the fallbacks if the power-on self-test of the
+    // fast one fails, or its candidates stop being confirmed by software
+    // (see pl_selftest and pl_health in mining.cpp).
+    PL_MINE pipelined_hw_mine_classic_v2_margin, .iram1.plmine2m,  6, 16, 42, 12, 14, 29, 12, 2, 1, 0
+    PL_MINE pipelined_hw_mine_classic_v2_wide,   .iram1.plmine2w, 18, 16, 54, 24, 14, 41, 24, 2, 1, 0
 
 #if defined(SHA_BENCH) && SHA_BENCH == 2
 #include "sha_bench_variants.inc"

@@ -1359,6 +1359,7 @@ typedef uint32_t (*pl_mine_fn)(volatile uint32_t *sha_base, pl_ctx_t *ctx);
 
 // src/pipelined_hw_sha_classic_v2.S: counted delays, no status polling.
 extern "C" uint32_t pipelined_hw_mine_classic_v2(volatile uint32_t *sha_base, pl_ctx_t *ctx);
+extern "C" uint32_t pipelined_hw_mine_classic_v2_margin(volatile uint32_t *sha_base, pl_ctx_t *ctx);
 extern "C" uint32_t pipelined_hw_mine_classic_v2_wide(volatile uint32_t *sha_base, pl_ctx_t *ctx);
 
 // src/pipelined_hw_sha_classic.cpp: the original BUSY-polling loop, ~27%
@@ -1423,10 +1424,11 @@ static uint32_t pl_mine_plain(volatile uint32_t *sha_base, pl_ctx_t *ctx)
 }
 
 static const struct { pl_mine_fn fn; const char *name; } s_pl_loops[] = {
-  {pipelined_hw_mine_classic_v2,      "fast"},
-  {pipelined_hw_mine_classic_v2_wide, "fast, wide margins"},
-  {pl_mine_legacy,                    "polled"},
-  {pl_mine_plain,                     "plain"},
+  {pipelined_hw_mine_classic_v2,        "fast"},
+  {pipelined_hw_mine_classic_v2_margin, "fast, +2 margins"},
+  {pipelined_hw_mine_classic_v2_wide,   "fast, wide margins"},
+  {pl_mine_legacy,                      "polled"},
+  {pl_mine_plain,                       "plain"},
 };
 #define PL_LOOP_COUNT (sizeof(s_pl_loops) / sizeof(s_pl_loops[0]))
 #define PL_LOOP_PLAIN (PL_LOOP_COUNT - 1)
@@ -1488,7 +1490,7 @@ static void pl_select_loop()
     n++;
   }
   #ifdef PL_FORCE_LOOP
-  n = PL_FORCE_LOOP; // A/B testing: 0 fast, 1 wide margins, 2 polled, 3 plain
+  n = PL_FORCE_LOOP; // A/B testing: 0 fast, 1 +2 margins, 2 wide margins, 3 polled, 4 plain
   #endif
   s_pl_loop = n;
   esp_sha_unlock_engine(SHA2_256);
