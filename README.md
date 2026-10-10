@@ -1,6 +1,6 @@
 # NerdMiner Modded
 
-**A modded fork of the NerdSoloMiner v2**
+**A modded fork of the NerdMiner v2**
 
 This is a modified version of the original **[NerdMiner_v2](https://github.com/BitMaker-hub/NerdMiner_v2)** by BitMaker-hub. All credit for the original project, the Stratum implementation and the multi-board support goes to the original authors and contributors. If you want the stock, widely tested firmware for any of the supported boards, use the original repository.
 
