@@ -22,6 +22,7 @@
 #define DEFAULT_BRIGHTNESS	250
 #define DEFAULT_FLIPDISPLAY	false
 #define DEFAULT_CURRENCY	"usd"
+#define DEFAULT_STATUSLED	true
 
 // JSON config files
 #define JSON_CONFIG_FILE	"/config.json"
@@ -49,6 +50,7 @@
 #define JSON_SPIFFS_KEY_BRIGHTNESS	"Brightness"
 #define JSON_SPIFFS_KEY_FLIPDISPLAY	"flipDisplay"
 #define JSON_SPIFFS_KEY_CURRENCY	"currency"
+#define JSON_SPIFFS_KEY_STATUSLED	"statusLed"
 
 // settings
 struct TSettings
@@ -65,6 +67,7 @@ struct TSettings
 	int Brightness{ DEFAULT_BRIGHTNESS };
 	bool flipDisplay{ DEFAULT_FLIPDISPLAY };	// rotate display 180 degrees (USB on the left)
 	String Currency{ DEFAULT_CURRENCY };	// fiat currency for the BTC price (CoinGecko vs_currency code)
+	bool statusLed{ DEFAULT_STATUSLED };	// boards without a screen: status LED on/off
 };
 
 #endif // _STORAGE_H_

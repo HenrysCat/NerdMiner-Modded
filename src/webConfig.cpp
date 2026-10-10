@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include "webConfig.h"
 #include "wManager.h"
+#include "drivers/devices/device.h"
 #include "drivers/storage/storage.h"
 #include "currency.h"
 
@@ -81,6 +82,9 @@ static void handleRoot()
   page += "<label><input type='checkbox' name='flip' " + String(Settings.flipDisplay ? "checked" : "") + "> Flip display (rotate 180 degrees)</label>";
   page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
 #endif
+#ifdef NO_DISPLAY
+  page += "<label><input type='checkbox' name='led' " + String(Settings.statusLed ? "checked" : "") + "> Status LED (blinks while mining)</label>";
+#endif
   page += F("<input type='submit' value='Save &amp; Restart'>"
             "</form></body></html>");
 
@@ -116,6 +120,9 @@ static void handleSave()
   Settings.flipDisplay = webCfgServer.hasArg("flip");
   if (webCfgServer.hasArg("brightness"))
     Settings.Brightness = webCfgServer.arg("brightness").toInt();
+#endif
+#ifdef NO_DISPLAY
+  Settings.statusLed = webCfgServer.hasArg("led");
 #endif
 
   saveSettingsToFlash();

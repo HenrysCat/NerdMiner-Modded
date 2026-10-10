@@ -39,6 +39,9 @@ bool nvMemory::saveConfig(TSettings* Settings)
         json[JSON_SPIFFS_KEY_BRIGHTNESS] = Settings->Brightness;
         json[JSON_SPIFFS_KEY_FLIPDISPLAY] = Settings->flipDisplay;
         json[JSON_SPIFFS_KEY_CURRENCY] = Settings->Currency;
+#ifdef NO_DISPLAY
+        json[JSON_SPIFFS_KEY_STATUSLED] = Settings->statusLed;
+#endif
 
         // Open config file
         File configFile = SPIFFS.open(JSON_CONFIG_FILE, "w");
@@ -113,6 +116,9 @@ bool nvMemory::loadConfig(TSettings* Settings)
                     }
                     Settings->flipDisplay = json[JSON_SPIFFS_KEY_FLIPDISPLAY] | false;
                     Settings->Currency = json[JSON_SPIFFS_KEY_CURRENCY] | DEFAULT_CURRENCY;
+#ifdef NO_DISPLAY
+                    Settings->statusLed = json[JSON_SPIFFS_KEY_STATUSLED] | DEFAULT_STATUSLED;
+#endif
                     return true;
                 }
                 else

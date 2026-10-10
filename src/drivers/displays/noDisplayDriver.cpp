@@ -5,9 +5,10 @@
 #include <Arduino.h>
 #include "monitor.h"
 #include "wManager.h"
+#include "../storage/storage.h"
 
 extern monitor_data mMonitor;
-bool ledOn = true;
+extern TSettings Settings;
 
 void noDisplay_Init(void)
 {
@@ -17,8 +18,9 @@ void noDisplay_Init(void)
 
 void noDisplay_AlternateScreenState(void)
 {
+  // Until the next restart only; the web settings page stores it.
   Serial.println("Switching display state");
-  ledOn = !ledOn;
+  Settings.statusLed = !Settings.statusLed;
 }
 
 void noDisplay_AlternateRotation(void)
@@ -59,7 +61,7 @@ void noDisplay_DoLedStuff(unsigned long frame)
 {
   unsigned long currentMillis = millis();
 
-  if (!ledOn)
+  if (!Settings.statusLed)
   {
     digitalWrite(LED_PIN, INACTIVE_LED);
     return;
