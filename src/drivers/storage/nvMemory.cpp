@@ -28,7 +28,7 @@ bool nvMemory::saveConfig(TSettings* Settings)
         Serial.println(F("SPIFS: Saving configuration."));
 
         // Create a JSON document
-        StaticJsonDocument<768> json;
+        StaticJsonDocument<1024> json;
         json[JSON_SPIFFS_KEY_POOLURL] = Settings->PoolAddress;
         json[JSON_SPIFFS_KEY_POOLPORT] = Settings->PoolPort;
         json[JSON_SPIFFS_KEY_POOLPASS] = Settings->PoolPassword;
@@ -39,6 +39,12 @@ bool nvMemory::saveConfig(TSettings* Settings)
         json[JSON_SPIFFS_KEY_BRIGHTNESS] = Settings->Brightness;
         json[JSON_SPIFFS_KEY_FLIPDISPLAY] = Settings->flipDisplay;
         json[JSON_SPIFFS_KEY_CURRENCY] = Settings->Currency;
+        json[JSON_SPIFFS_KEY_SCREENTIMEOUT] = Settings->ScreenTimeout;
+        json[JSON_SPIFFS_KEY_NIGHTDIM] = Settings->nightDim;
+        json[JSON_SPIFFS_KEY_NIGHTBRIGHTNESS] = Settings->NightBrightness;
+        json[JSON_SPIFFS_KEY_NIGHTFADE] = Settings->NightFade;
+        json[JSON_SPIFFS_KEY_LATITUDE] = Settings->Latitude;
+        json[JSON_SPIFFS_KEY_LONGITUDE] = Settings->Longitude;
 #ifdef NO_DISPLAY
         json[JSON_SPIFFS_KEY_STATUSLED] = Settings->statusLed;
 #endif
@@ -88,7 +94,7 @@ bool nvMemory::loadConfig(TSettings* Settings)
             if (configFile)
             {
                 Serial.println("SPIFS: Loading config file");
-                StaticJsonDocument<768> json;
+                StaticJsonDocument<1024> json;
                 DeserializationError error = deserializeJson(json, configFile);
                 configFile.close();
                 serializeJsonPretty(json, Serial);
@@ -116,6 +122,12 @@ bool nvMemory::loadConfig(TSettings* Settings)
                     }
                     Settings->flipDisplay = json[JSON_SPIFFS_KEY_FLIPDISPLAY] | false;
                     Settings->Currency = json[JSON_SPIFFS_KEY_CURRENCY] | DEFAULT_CURRENCY;
+                    Settings->ScreenTimeout = json[JSON_SPIFFS_KEY_SCREENTIMEOUT] | DEFAULT_SCREENTIMEOUT;
+                    Settings->nightDim = json[JSON_SPIFFS_KEY_NIGHTDIM] | DEFAULT_NIGHTDIM;
+                    Settings->NightBrightness = json[JSON_SPIFFS_KEY_NIGHTBRIGHTNESS] | DEFAULT_NIGHTBRIGHTNESS;
+                    Settings->NightFade = json[JSON_SPIFFS_KEY_NIGHTFADE] | DEFAULT_NIGHTFADE;
+                    Settings->Latitude = json[JSON_SPIFFS_KEY_LATITUDE] | 0.0f;
+                    Settings->Longitude = json[JSON_SPIFFS_KEY_LONGITUDE] | 0.0f;
 #ifdef NO_DISPLAY
                     Settings->statusLed = json[JSON_SPIFFS_KEY_STATUSLED] | DEFAULT_STATUSLED;
 #endif

@@ -12,6 +12,7 @@
 // (esp23_2432s028r.cpp) the chrome is drawn straight to the panel and every
 // widget goes through a small scratch sprite.
 #include "displayDriver.h"
+#include "display.h"
 
 #ifdef ESP32_4IN_ST7796_DISPLAY
 
@@ -1153,7 +1154,7 @@ void esp32_4in_AlternateScreenState(void)
   }
   else
   {
-    ledcWrite(0, Settings.Brightness);
+    ledcWrite(0, backlightLevel()); // day, night or in between
   }
 }
 
@@ -1284,6 +1285,8 @@ void esp32_4in_DoLedStuff(unsigned long frame)
 {
   int action = pendingTouch;
   pendingTouch = TA_NONE;
+  if (action != TA_NONE)
+    noteScreenActivity(); // screen timeout
   DisplayDriver *drv = currentDisplayDriver;
   switch (action)
   {

@@ -26,6 +26,7 @@ bool shouldSaveConfig = false;
 
 // Variables to hold data from custom textboxes
 TSettings Settings;
+std::mutex g_settingsMutex; // see wManager.h
 
 // Define WiFiManager Object
 WiFiManager wm;
@@ -129,9 +130,9 @@ void reset_configuration()
     ESP.restart();
 }
 
-void saveSettingsToFlash()
+void saveSettingsToFlash(TSettings *settings)
 {
-    nvMem.saveConfig(&Settings);
+    nvMem.saveConfig(settings);
 }
 
 void init_WifiManager()
@@ -381,10 +382,13 @@ void init_WifiManager()
         Serial.println(Settings.Timezone);
 
         #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
-        Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
+        // Only when the portal form was submitted: an unused checkbox still
+        // holds its "T", which would turn the saved setting on in memory (the
+        // LAN settings page then showed and compared against the wrong value).
+        if (shouldSaveConfig) Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
         if (shouldSaveConfig) Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
         Serial.print("Invert Colors: ");
-        Serial.println(Settings.invertColors);        
+        Serial.println(Settings.invertColors);
         #endif
 
         #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
@@ -427,7 +431,7 @@ void init_WifiManager()
     Serial.println(Settings.Timezone);
 
     #ifdef ESP32_2432S028R
-    Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
+    if (shouldSaveConfig) Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
     if (shouldSaveConfig) Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
     Serial.print("Invert Colors: ");
     Serial.println(Settings.invertColors);

@@ -135,5 +135,17 @@ pool_data getPoolData(void);
 
 clock_data_t getClockData_t(unsigned long mElapsed);
 String getPoolAPIUrl(void);
+bool getUtcTime(time_t &utc, bool sync = false);
+
+// Settings changed on the LAN settings page without a restart. The monitor
+// task (screens, price, pool stats) applies them itself, between screen
+// refreshes, in applyPendingSettings(): a new Settings.Timezone, a currency
+// handed over with requestCurrencyChange() (a kCurrencies code), and, after
+// poolSettingsChanged() from the stratum task, the pool stats lookup.
+// currencySetting() is the currency in use or the one waiting.
+void requestCurrencyChange(const char *code);
+String currencySetting(void);
+void poolSettingsChanged(void);
+void applyPendingSettings(void);
 
 #endif //MONITOR_API_H

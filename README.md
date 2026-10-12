@@ -23,7 +23,8 @@ Original NerdMiner_v2 project https://github.com/BitMaker-hub/NerdMiner_v2
 - **Headless build for a bare ESP32-WROOM-32** – a dev board without a screen has its own build, `ESP32-WROOM-Headless`: the same mining loop (measured at ~990 KH/s on a revision 3 chip), status on the serial port and the on-board LED. The LED can be switched off from the web settings page.
 - **Classic theme still available** – prefer the original look? Build the `ESP32-2432S028R-Classic` environment (`pio run -e ESP32-2432S028R-Classic -t upload`).
 - **BTC price in your currency** – choose which fiat currency the BTC price is shown in from the web settings page.
-- **Improved web settings page** – the settings page stays reachable while mining, and now also has options for display flip (USB on the left), colour inversion, brightness and currency. After saving it waits for the device to restart and returns to the settings page automatically. See [Web settings page](#web-settings-page) for how to log in.
+- **Improved web settings page** – the settings page stays reachable while mining, and now also has options for display flip (USB on the left), colour inversion, brightness and currency. Changes apply without a restart, including switching pool or wallet; only colour inversion and display flip restart the device. See [Web settings page](#web-settings-page) for how to log in.
+- **Screen timeout and night dimming** – on the boards with a touch screen the backlight can switch off after a set number of minutes without a touch, and fade down to a night level around sunset (and back up at sunrise) for the city or coordinates you pick. Both are set from the web settings page.
 
 ### Why this hashrate is real
 
@@ -153,15 +154,21 @@ Note: when BTC address of your selected wallet is not provided, mining will not 
 
 #### Web settings page
 
-Once the miner is on your Wifi network it serves a settings page, also while it is mining, so you can change the pool, wallet, timezone, currency and display options without going back to the setup access point. On a board without a screen the page has a **Status LED** option instead of the display options, to switch the blinking LED off.
+Once the miner is on your Wifi network it serves a settings page, also while it is mining, so you can change the pool, wallet, timezone, currency and display options without going back to the setup access point. On boards with a touch screen (CYD, 4" CYD, ES3C35P) it can also turn the screen off after a set number of minutes without a touch; any touch or press of the BOOT button wakes it again. On a board without a screen the page has a **Status LED** option instead of the display options, to switch the blinking LED off.
 
 1. Open `http://<miner IP address>/` in a browser on the same network. On the CYD the IP address is shown at the top of the screen; it is also printed on the serial log at start-up and listed by your router.
 1. Log in when the browser asks:
    - User: admin
    - Password: MineYourCoins
-1. Change what you need and press **Save & Restart**. The miner restarts with the new settings and the page comes back by itself.
+1. Change what you need and press **Save**. The new settings apply straight away, without a restart: a new pool, port, wallet or pool password makes the miner drop the old pool and connect to the new one, and timezone, currency and brightness change on screen within a second or so. Only changing colour inversion or display flip restarts the miner; the page then waits and comes back by itself.
 
 Note: the login is the same on every miner (the password is the one of the setup access point) and the page is plain HTTP, so only use it on a network you trust.
+
+##### Night dimming
+
+On the boards with a touch screen the settings page can also fade the backlight down after dark. Tick **Dim the screen at night**, set a night brightness and a fade length in minutes, and pick the nearest city from the list. A city a few hundred kilometres away is still good to a few minutes; for an exact location choose **Custom** and enter your latitude and longitude in decimal degrees (south and west are negative, e.g. London is 51.51 and -0.13). The backlight then moves between the normal brightness and the night level across a window centred on each crossing: the default 60 minute fade starts 30 minutes before sunset and finishes 30 minutes after, then reverses at sunrise.
+
+The page prints the current sun state and today's sunrise and sunset next to the controls, in the timezone set on the page, so you can check the location is right. Until the clock has been set from the network, or with no location entered, the normal brightness is used.
 
 #### SD card (if available)
 

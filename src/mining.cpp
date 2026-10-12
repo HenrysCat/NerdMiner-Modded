@@ -13,6 +13,7 @@
 #include "timeconst.h"
 #include "drivers/displays/display.h"
 #include "drivers/storage/storage.h"
+#include "wManager.h"
 #include <mutex>
 #include <list>
 #include <map>
@@ -122,6 +123,51 @@ mining_job mJob;
 monitor_data mMonitor;
 static bool volatile isMinerSuscribed = false;
 unsigned long mLastTXtoPool = millis();
+
+// Pool settings saved on the LAN settings page (webConfig.cpp). The page
+// doesn't write them into Settings itself: the stratum task reads the pool
+// address while it connects, holding its c_str() through a blocking DNS
+// lookup. They wait here until the stratum loop swaps them in between
+// connections (takePoolChange). Guarded by g_settingsMutex.
+static bool s_poolChangePending = false;
+static TSettings s_poolChange; // only the pool fields are used
+
+static void copyPoolSettings(TSettings &to, const TSettings &from)
+{
+  to.PoolAddress = from.PoolAddress;
+  to.PoolPort = from.PoolPort;
+  memcpy(to.BtcWallet, from.BtcWallet, sizeof(to.BtcWallet));
+  to.BtcWallet[sizeof(to.BtcWallet) - 1] = 0;
+  memcpy(to.PoolPassword, from.PoolPassword, sizeof(to.PoolPassword));
+  to.PoolPassword[sizeof(to.PoolPassword) - 1] = 0;
+}
+
+void requestPoolChange(const TSettings &s)
+{
+  std::lock_guard<std::mutex> lock(g_settingsMutex);
+  copyPoolSettings(s_poolChange, s);
+  s_poolChangePending = true;
+}
+
+void readPoolSettings(TSettings &s)
+{
+  std::lock_guard<std::mutex> lock(g_settingsMutex);
+  copyPoolSettings(s, s_poolChangePending ? s_poolChange : Settings);
+}
+
+// Stratum task only. Swaps a waiting pool change into Settings; true if it
+// did. The monitor task, the other reader of these fields, runs on the same
+// core at a higher priority and never blocks halfway through reading one, so
+// it can't see a String here half-assigned.
+static bool takePoolChange(void)
+{
+  std::lock_guard<std::mutex> lock(g_settingsMutex);
+  if (!s_poolChangePending)
+    return false;
+  copyPoolSettings(Settings, s_poolChange);
+  s_poolChangePending = false;
+  return true;
+}
 
 int saveIntervals[7] = {5 * 60, 15 * 60, 30 * 60, 1 * 3600, 3 * 3600, 6 * 3600, 12 * 3600};
 int saveIntervalsSize = sizeof(saveIntervals)/sizeof(saveIntervals[0]);
@@ -324,7 +370,22 @@ void runStratumWorker(void *name) {
   uint32_t last_job_time = millis();
 
   while(true) {
-      
+
+    if(takePoolChange()){
+      // New pool settings from the LAN settings page: drop the old pool and
+      // its jobs, look the new address up and connect to it below.
+      Serial.printf("[STRATUM] Pool settings changed, switching to %s:%d\n", Settings.PoolAddress.c_str(), Settings.PoolPort);
+      client.stop();
+      isMinerSuscribed = false;
+      MiningJobStop(job_pool, s_submition_map);
+      #if defined(PIPELINED_ASM_MINING) && defined(CONFIG_IDF_TARGET_ESP32)
+      s_pl_ctx.run = 0; // don't finish the old job's chunk
+      #endif
+      currentPoolDifficulty = DEFAULT_DIFFICULTY;
+      serverIP = IPAddress(1, 1, 1, 1);
+      poolSettingsChanged(); // monitor: pool stats URL and data
+    }
+
     if(WiFi.status() != WL_CONNECTED){
       // WiFi is disconnected, so reconnect now
       mMonitor.NerdStatus = NM_Connecting;
@@ -338,7 +399,13 @@ void runStratumWorker(void *name) {
       //If server is not reachable add random delay for connection retries
       //Generate value between 1 and 60 secs
       MiningJobStop(job_pool, s_submition_map);
-      vTaskDelay(((1 + rand() % 60) * 1000) / portTICK_PERIOD_MS);
+      // A second at a time, so a pool fixed on the settings page is tried
+      // straight away instead of after the rest of the wait.
+      for (int s = 1 + rand() % 60; s > 0; s--) {
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        std::lock_guard<std::mutex> lock(g_settingsMutex);
+        if (s_poolChangePending) break;
+      }
       continue;
     }
 
@@ -1922,6 +1989,8 @@ void runMonitor(void *name)
         upTime ++;
       }
 
+      applyPendingSettings(); // from the LAN settings page
+      backlightTick();
       drawCurrentScreen(mElapsed);
 
       // Monitor state when hashrate is 0.0

@@ -14,6 +14,7 @@
 // Dev aid: -D CYD_UI_SCREENSHOT=1 renders every screen once at boot into an
 // offscreen 8-bit sprite and dumps it over serial (see SHOT_BEGIN/SHOT_END).
 #include "displayDriver.h"
+#include "display.h"
 
 #if (defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)) && !defined(CYD_THEME_CLASSIC)
 
@@ -1117,7 +1118,7 @@ void esp32_2432S028R_AlternateScreenState(void)
   }
   else
   {
-    ledcWrite(0, Settings.Brightness);
+    ledcWrite(0, backlightLevel()); // day, night or in between
   }
 }
 
@@ -1202,7 +1203,9 @@ static void touchTask(void *)
       if (++downCount == 2 && !wasDown) // two consecutive samples: real press, act once per touch
       {
         wasDown = true;
-        if (t_y < HDR_H + 4 && t_x > 235)
+        if (ledcRead(0) == 0)
+          pendingTouch = TA_BACKLIGHT; // dark: any touch turns the backlight back on
+        else if (t_y < HDR_H + 4 && t_x > 235)
           pendingTouch = TA_BACKLIGHT; // top-right: backlight on/off
         else if (t_y < HDR_H + 4 && t_x < 110)
           pendingTouch = TA_ACCENT; // wordmark: next accent colour
@@ -1224,6 +1227,8 @@ void esp32_2432S028R_DoLedStuff(unsigned long frame)
   unsigned long currentMillis = millis();
   int action = pendingTouch;
   pendingTouch = TA_NONE;
+  if (action != TA_NONE)
+    noteScreenActivity(); // screen timeout
   DisplayDriver *drv = currentDisplayDriver;
   switch (action)
   {

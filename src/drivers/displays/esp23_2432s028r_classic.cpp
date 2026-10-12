@@ -6,6 +6,7 @@
 // "ESP32-2432S028R-Classic" env, or add -D CYD_THEME_CLASSIC=1 to any CYD
 // env's build_flags. Also tagged in git as `cyd-theme-classic`.
 #include "displayDriver.h"
+#include "display.h"
 
 #if (defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)) && defined(CYD_THEME_CLASSIC)
 
@@ -122,7 +123,7 @@ void esp32_2432S028R_AlternateScreenState(void)
   if (screen_state_duty > 0) {
     ledcWrite(0, 0);
   } else {
-    ledcWrite(0, Settings.Brightness);
+    ledcWrite(0, backlightLevel()); // day, night or in between
   }
 }
 
@@ -547,7 +548,9 @@ void esp32_2432S028R_DoLedStuff(unsigned long frame)
     { 
       int16_t t_x , t_y;  // To store the touch coordinates
       bool pressed = touch.getXY(t_x, t_y);
-      if (pressed) {                        
+      if (pressed && wakeScreen()) {
+          // dark: the touch only turns the backlight back on
+      } else if (pressed) {
           if (((t_x > 109)&&(t_x < 211)) && ((t_y > 185)&&(t_y < 241))) {
             bottomScreenBlue ^= true;
             hasChangedScreen = true;

@@ -1,0 +1,108 @@
+#ifndef CITIES_H
+#define CITIES_H
+
+// Cities offered on the LAN settings page as a quick way to set the location
+// night dimming works sunrise and sunset out for. Only the coordinates are
+// stored (Settings.Latitude / Longitude); anywhere within a few hundred km is
+// good to a few minutes. Decimal degrees, north and east positive; sorted by
+// name.
+struct CityInfo
+{
+  const char *name;
+  float latitude;
+  float longitude;
+};
+
+static const CityInfo kCities[] = {
+    {"Adelaide", -34.93f, 138.60f},
+    {"Amsterdam", 52.37f, 4.90f},
+    {"Anchorage", 61.22f, -149.90f},
+    {"Athens", 37.98f, 23.73f},
+    {"Atlanta", 33.75f, -84.39f},
+    {"Auckland", -36.85f, 174.76f},
+    {"Bangkok", 13.76f, 100.50f},
+    {"Barcelona", 41.39f, 2.17f},
+    {"Beijing", 39.90f, 116.41f},
+    {"Belfast", 54.60f, -5.93f},
+    {"Berlin", 52.52f, 13.40f},
+    {"Birmingham (UK)", 52.49f, -1.89f},
+    {"Bogota", 4.71f, -74.07f},
+    {"Boston", 42.36f, -71.06f},
+    {"Brisbane", -27.47f, 153.03f},
+    {"Brussels", 50.85f, 4.35f},
+    {"Bucharest", 44.43f, 26.10f},
+    {"Budapest", 47.50f, 19.04f},
+    {"Buenos Aires", -34.60f, -58.38f},
+    {"Cairo", 30.04f, 31.24f},
+    {"Calgary", 51.05f, -114.07f},
+    {"Cape Town", -33.92f, 18.42f},
+    {"Chicago", 41.88f, -87.63f},
+    {"Copenhagen", 55.68f, 12.57f},
+    {"Dallas", 32.78f, -96.80f},
+    {"Delhi", 28.61f, 77.21f},
+    {"Denver", 39.74f, -104.99f},
+    {"Dubai", 25.20f, 55.27f},
+    {"Dublin", 53.35f, -6.26f},
+    {"Edinburgh", 55.95f, -3.19f},
+    {"Frankfurt", 50.11f, 8.68f},
+    {"Glasgow", 55.86f, -4.25f},
+    {"Helsinki", 60.17f, 24.94f},
+    {"Hong Kong", 22.32f, 114.17f},
+    {"Honolulu", 21.31f, -157.86f},
+    {"Houston", 29.76f, -95.37f},
+    {"Istanbul", 41.01f, 28.98f},
+    {"Jakarta", -6.21f, 106.85f},
+    {"Johannesburg", -26.20f, 28.05f},
+    {"Karachi", 24.86f, 67.01f},
+    {"Kuala Lumpur", 3.14f, 101.69f},
+    {"Kyiv", 50.45f, 30.52f},
+    {"Lagos", 6.52f, 3.38f},
+    {"Lima", -12.05f, -77.04f},
+    {"Lisbon", 38.72f, -9.14f},
+    {"London", 51.51f, -0.13f},
+    {"Los Angeles", 34.05f, -118.24f},
+    {"Madrid", 40.42f, -3.70f},
+    {"Manchester", 53.48f, -2.24f},
+    {"Manila", 14.60f, 120.98f},
+    {"Melbourne", -37.81f, 144.96f},
+    {"Mexico City", 19.43f, -99.13f},
+    {"Miami", 25.76f, -80.19f},
+    {"Milan", 45.46f, 9.19f},
+    {"Montreal", 45.50f, -73.57f},
+    {"Moscow", 55.76f, 37.62f},
+    {"Mumbai", 19.08f, 72.88f},
+    {"Munich", 48.14f, 11.58f},
+    {"Nairobi", -1.29f, 36.82f},
+    {"New York", 40.71f, -74.01f},
+    {"Oslo", 59.91f, 10.75f},
+    {"Paris", 48.86f, 2.35f},
+    {"Perth", -31.95f, 115.86f},
+    {"Phoenix", 33.45f, -112.07f},
+    {"Prague", 50.08f, 14.44f},
+    {"Reykjavik", 64.15f, -21.94f},
+    {"Rio de Janeiro", -22.91f, -43.17f},
+    {"Riyadh", 24.71f, 46.68f},
+    {"Rome", 41.90f, 12.50f},
+    {"San Francisco", 37.77f, -122.42f},
+    {"Santiago", -33.45f, -70.67f},
+    {"Sao Paulo", -23.55f, -46.63f},
+    {"Seattle", 47.61f, -122.33f},
+    {"Seoul", 37.57f, 126.98f},
+    {"Shanghai", 31.23f, 121.47f},
+    {"Singapore", 1.35f, 103.82f},
+    {"Stockholm", 59.33f, 18.07f},
+    {"Sydney", -33.87f, 151.21f},
+    {"Taipei", 25.03f, 121.57f},
+    {"Tel Aviv", 32.09f, 34.78f},
+    {"Tokyo", 35.68f, 139.69f},
+    {"Toronto", 43.65f, -79.38f},
+    {"Vancouver", 49.28f, -123.12f},
+    {"Vienna", 48.21f, 16.37f},
+    {"Warsaw", 52.23f, 21.01f},
+    {"Washington DC", 38.91f, -77.04f},
+    {"Wellington", -41.29f, 174.78f},
+    {"Zurich", 47.38f, 8.54f},
+};
+static const int kCityCount = sizeof(kCities) / sizeof(kCities[0]);
+
+#endif // CITIES_H

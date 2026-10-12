@@ -86,6 +86,14 @@ struct HwShaRequest
 void runMonitor(void *name);
 
 void runStratumWorker(void *name);
+
+// Pool address, port, wallet and pool password from the LAN settings page:
+// the stratum task swaps them into Settings between connections and
+// reconnects to the pool, no restart needed. readPoolSettings() gives the
+// ones in use, or the ones waiting to be swapped in.
+struct TSettings;
+void requestPoolChange(const TSettings &s);
+void readPoolSettings(TSettings &s);
 void runMiner(void *name);
 
 void minerWorkerSw(void * task_id);

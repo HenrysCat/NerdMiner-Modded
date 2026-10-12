@@ -15,6 +15,7 @@
 // Dev aid: -D ES3C35P_UI_SCREENSHOT=1 renders every screen once at boot and
 // dumps the frame buffer over serial (see SHOT_BEGIN/SHOT_END).
 #include "displayDriver.h"
+#include "display.h"
 
 #ifdef ES3C35P_DISPLAY
 
@@ -1444,7 +1445,7 @@ void es3c35p_AlternateScreenState(void)
   }
   else
   {
-    ledcWrite(0, Settings.Brightness);
+    ledcWrite(0, backlightLevel()); // day, night or in between
   }
 }
 
@@ -1567,6 +1568,8 @@ void es3c35p_DoLedStuff(unsigned long frame)
 {
   int action = pendingTouch;
   pendingTouch = TA_NONE;
+  if (action != TA_NONE)
+    noteScreenActivity(); // screen timeout
   DisplayDriver *drv = currentDisplayDriver;
   switch (action)
   {
