@@ -23,6 +23,7 @@
 #include "rotation.h"
 #include "drivers/storage/nvMemory.h"
 #include "drivers/storage/storage.h"
+#include "rgbLed.h"
 
 #define WIDTH 130 //320
 #define HEIGHT 170 
@@ -103,12 +104,7 @@ void esp32_2432S028R_Init(void)
     return;
   }
   
-  pinMode(LED_PIN, OUTPUT);
-  pinMode(LED_PIN_B, OUTPUT);
-  pinMode(LED_PIN_G, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
-  digitalWrite(LED_PIN_B, HIGH);
-  digitalWrite(LED_PIN_G, HIGH);
+  rgbLedInit();
   pData.bestDifficulty = "0";
   pData.workersHash = "0";
   pData.workersCount = 0;
@@ -535,8 +531,6 @@ void esp32_2432S028R_AnimateCurrentScreen(unsigned long frame)
 {
 }
 
-// Variables para controlar el parpadeo con millis()
-unsigned long previousMillis = 0;
 unsigned long previousTouchMillis = 0;
 char currentScreen = 0;
 
@@ -579,34 +573,7 @@ void esp32_2432S028R_DoLedStuff(unsigned long frame)
     if (currentScreen != currentDisplayDriver->current_cyclic_screen) hasChangedScreen ^= true;
     currentScreen = currentDisplayDriver->current_cyclic_screen;
 
-  switch (mMonitor.NerdStatus)
-  {
-  case NM_waitingConfig:
-    digitalWrite(LED_PIN, LOW); // LED encendido de forma continua
-    break;
-
-  case NM_Connecting:
-    if (currentMillis - previousMillis >= 500)
-    { // 0.5sec blink
-      previousMillis = currentMillis;
-      // Serial.print("C");
-      digitalWrite(LED_PIN, HIGH);
-      digitalWrite(LED_PIN_B, !digitalRead(LED_PIN)); // Cambia el estado del LED
-    }
-    break;
-
-  case NM_hashing:
-    if (currentMillis - previousMillis >= 500)
-    { // 0.1sec blink
-      // Serial.print("h");
-      previousMillis = currentMillis;
-      digitalWrite(LED_PIN_B, HIGH);
-      digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // Cambia el estado del LED      
-    }
-    break;
-  }
-  
-
+  rgbLedTick();
 }
 
 CyclicScreenFunction esp32_2432S028RCyclicScreens[] = {esp32_2432S028R_MinerScreen, esp32_2432S028R_ClockScreen, esp32_2432S028R_GlobalHashScreen, esp32_2432S028R_BTCprice};

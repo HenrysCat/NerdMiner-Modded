@@ -2,6 +2,7 @@
 #ifndef MINING_API_H
 #define MINING_API_H
 
+#include <Arduino.h>
 #include <mutex>
 
 // Serializes classic-ESP32 (CONFIG_IDF_TARGET_ESP32) hardware SHA register
@@ -94,6 +95,31 @@ void runStratumWorker(void *name);
 struct TSettings;
 void requestPoolChange(const TSettings &s);
 void readPoolSettings(TSettings &s);
+
+// Backup pool: after POOL_FAILOVER_TRIES failed attempts in a row on the pool
+// in use, the stratum task moves to the other one (when a backup is set).
+// While on the backup it checks every POOL_FAILBACK_ms whether the main pool
+// takes a connection again, and goes back if it does. The pool in use:
+#define POOL_FAILOVER_TRIES 3
+#ifndef POOL_FAILBACK_ms
+#define POOL_FAILBACK_ms    (10 * 60 * 1000UL)
+#endif
+bool onBackupPool(void);
+const String &activePoolAddress(void);
+int activePoolPort(void);
+
+// Live miner state for the LAN status endpoint (/api/status).
+struct MinerStatus
+{
+  float hashrateKHs;    // last 10 s
+  float avgHashrateKHs; // since boot
+  uint32_t accepted;    // shares the pool accepted since boot
+  uint32_t rejected;    // ...and refused
+  bool subscribed;      // connected and subscribed to the pool
+  double poolDifficulty;
+};
+MinerStatus getMinerStatus(void);
+
 void runMiner(void *name);
 
 void minerWorkerSw(void * task_id);

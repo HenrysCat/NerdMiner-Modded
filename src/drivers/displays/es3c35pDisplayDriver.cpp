@@ -657,8 +657,8 @@ static int wifiBars()
 
 static float lastKh = 0;
 
-// The firmware never sets NM_hashing itself (status stays NM_Connecting once
-// WiFi is up), so derive what the header shows from what is actually happening.
+// The header follows what is actually happening: hashing whenever the hash
+// counter moves, even while the pool connection is being made again.
 static int uiStatus()
 {
   if (mMonitor.NerdStatus == NM_waitingConfig)

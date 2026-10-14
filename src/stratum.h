@@ -67,5 +67,6 @@ bool tx_suggest_difficulty(WiFiClient& client, double difficulty);
 bool parse_mining_set_difficulty(String line, double& difficulty);
 
 unsigned long parse_extract_id(const String &line);
+bool parse_extract_result(const String &line);
 
 #endif // STRATUM_API_H

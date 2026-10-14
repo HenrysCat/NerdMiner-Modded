@@ -27,6 +27,14 @@
 #define DEFAULT_NIGHTDIM	false
 #define DEFAULT_NIGHTBRIGHTNESS	40	// backlight duty 1-255
 #define DEFAULT_NIGHTFADE	60	// minutes, half before and half after sunset / sunrise
+#define LED_MODE_OFF		0
+#define LED_MODE_STATUS		1	// red at start-up, blue while connecting, blinks the colour while mining
+#define LED_MODE_STEADY		2	// the colour, always on
+#define DEFAULT_LEDMODE		LED_MODE_STATUS
+#define DEFAULT_LEDCOLOR	0xFF0000	// 0xRRGGBB
+#define DEFAULT_LEDBRIGHTNESS	255
+#define DEFAULT_LEDSCREENOFF	false
+#define DEFAULT_WEBPASSWORD	DEFAULT_WIFIPW	// LAN settings page login (user admin)
 
 // JSON config files
 #define JSON_CONFIG_FILE	"/config.json"
@@ -61,6 +69,14 @@
 #define JSON_SPIFFS_KEY_NIGHTFADE	"nightFade"
 #define JSON_SPIFFS_KEY_LATITUDE	"latitude"
 #define JSON_SPIFFS_KEY_LONGITUDE	"longitude"
+#define JSON_SPIFFS_KEY_LEDMODE		"ledMode"
+#define JSON_SPIFFS_KEY_LEDCOLOR	"ledColor"
+#define JSON_SPIFFS_KEY_LEDBRIGHTNESS	"ledBrightness"
+#define JSON_SPIFFS_KEY_LEDSCREENOFF	"ledScreenOff"
+#define JSON_SPIFFS_KEY_BACKUPPOOLURL	"backupPoolString"
+#define JSON_SPIFFS_KEY_BACKUPPOOLPORT	"backupPortNumber"
+#define JSON_SPIFFS_KEY_BACKUPPOOLPASS	"backupPoolPassword"
+#define JSON_SPIFFS_KEY_WEBPASSWORD	"webPassword"
 
 // settings
 struct TSettings
@@ -71,6 +87,10 @@ struct TSettings
 	char BtcWallet[80]{ DEFAULT_WALLETID };
 	char PoolPassword[80]{ DEFAULT_POOLPASS };
 	int PoolPort{ DEFAULT_POOLPORT };
+	// Used while the pool above is down (same wallet); no address = none
+	String BackupPoolAddress{ "" };
+	int BackupPoolPort{ DEFAULT_POOLPORT };
+	char BackupPoolPassword[80]{ DEFAULT_POOLPASS };
 	int Timezone{ DEFAULT_TIMEZONE };
 	bool saveStats{ DEFAULT_SAVESTATS };
 	bool invertColors{ DEFAULT_INVERTCOLORS };
@@ -86,6 +106,12 @@ struct TSettings
 	int NightFade{ DEFAULT_NIGHTFADE };
 	float Latitude{ 0 };	// decimal degrees, north positive; 0,0 = not set
 	float Longitude{ 0 };	// decimal degrees, east positive
+	// Boards with an RGB LED (CYD)
+	int ledMode{ DEFAULT_LEDMODE };	// LED_MODE_*
+	uint32_t ledColor{ DEFAULT_LEDCOLOR };	// 0xRRGGBB
+	int ledBrightness{ DEFAULT_LEDBRIGHTNESS };	// 1-255
+	bool ledScreenOff{ DEFAULT_LEDSCREENOFF };	// LED off while the screen is off
+	String WebPassword{ DEFAULT_WEBPASSWORD };	// LAN settings page login, never empty
 };
 
 #endif // _STORAGE_H_

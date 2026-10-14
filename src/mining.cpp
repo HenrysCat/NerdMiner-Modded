@@ -140,6 +140,96 @@ static void copyPoolSettings(TSettings &to, const TSettings &from)
   to.BtcWallet[sizeof(to.BtcWallet) - 1] = 0;
   memcpy(to.PoolPassword, from.PoolPassword, sizeof(to.PoolPassword));
   to.PoolPassword[sizeof(to.PoolPassword) - 1] = 0;
+  to.BackupPoolAddress = from.BackupPoolAddress;
+  to.BackupPoolPort = from.BackupPoolPort;
+  memcpy(to.BackupPoolPassword, from.BackupPoolPassword, sizeof(to.BackupPoolPassword));
+  to.BackupPoolPassword[sizeof(to.BackupPoolPassword) - 1] = 0;
+}
+
+// Backup pool (see mining.h). Only the stratum task changes these.
+static volatile bool s_onBackup = false;
+static uint8_t s_poolFailures = 0;   // failed attempts in a row on the pool in use
+static uint32_t s_backupSince = 0;   // millis() of the switch to the backup, or of the last look at the main pool
+
+static bool backupPoolSet(void)
+{
+  return !Settings.BackupPoolAddress.isEmpty() && Settings.BackupPoolPort > 0;
+}
+
+bool onBackupPool(void)
+{
+  return s_onBackup;
+}
+
+const String &activePoolAddress(void)
+{
+  return s_onBackup ? Settings.BackupPoolAddress : Settings.PoolAddress;
+}
+
+int activePoolPort(void)
+{
+  return s_onBackup ? Settings.BackupPoolPort : Settings.PoolPort;
+}
+
+static const char *activePoolPassword(void)
+{
+  return s_onBackup ? Settings.BackupPoolPassword : Settings.PoolPassword;
+}
+
+// While on the backup: does the main pool take a connection again? Blocks
+// the stratum task for a few seconds at most; the miners keep working on the
+// backup's current job meanwhile.
+static bool mainPoolAnswers(void)
+{
+  IPAddress ip;
+  if (!WiFi.hostByName(Settings.PoolAddress.c_str(), ip))
+    return false;
+  WiFiClient probe;
+  const bool ok = probe.connect(ip, Settings.PoolPort, 3000);
+  probe.stop();
+  return ok;
+}
+
+// For /api/status: counted by the stratum task...
+static volatile uint32_t s_sharesAccepted = 0;
+static volatile uint32_t s_sharesRejected = 0;
+static volatile double s_poolDifficulty = DEFAULT_DIFFICULTY;
+// ...and the kH counter, sampled once a second by the monitor loop.
+#define STATUS_RATE_SAMPLES 11 // 10 s window
+static uint32_t s_rateKh[STATUS_RATE_SAMPLES];
+static uint32_t s_rateMs[STATUS_RATE_SAMPLES];
+static volatile uint8_t s_rateHead = 0, s_rateCount = 0;
+static uint32_t s_bootKh = 0, s_bootMs = 0;
+
+static void statusRateSample(uint32_t kh, uint32_t ms)
+{
+  const uint8_t i = (s_rateHead + 1) % STATUS_RATE_SAMPLES;
+  s_rateKh[i] = kh;
+  s_rateMs[i] = ms;
+  s_rateHead = i;
+  if (s_rateCount < STATUS_RATE_SAMPLES)
+    s_rateCount++;
+}
+
+MinerStatus getMinerStatus(void)
+{
+  MinerStatus s{};
+  const uint8_t head = s_rateHead, n = s_rateCount;
+  if (n >= 2)
+  {
+    const uint8_t oldest = (head + STATUS_RATE_SAMPLES - (n - 1)) % STATUS_RATE_SAMPLES;
+    const uint32_t ms = s_rateMs[head] - s_rateMs[oldest];
+    if (ms)
+      s.hashrateKHs = (s_rateKh[head] - s_rateKh[oldest]) * 1000.0f / ms;
+    const uint32_t bootMs = s_rateMs[head] - s_bootMs;
+    if (bootMs)
+      s.avgHashrateKHs = (s_rateKh[head] - s_bootKh) * 1000.0f / bootMs;
+  }
+  s.accepted = s_sharesAccepted;
+  s.rejected = s_sharesRejected;
+  s.subscribed = isMinerSuscribed;
+  s.poolDifficulty = s_poolDifficulty;
+  return s;
 }
 
 void requestPoolChange(const TSettings &s)
@@ -155,17 +245,33 @@ void readPoolSettings(TSettings &s)
   copyPoolSettings(s, s_poolChangePending ? s_poolChange : Settings);
 }
 
-// Stratum task only. Swaps a waiting pool change into Settings; true if it
-// did. The monitor task, the other reader of these fields, runs on the same
-// core at a higher priority and never blocks halfway through reading one, so
-// it can't see a String here half-assigned.
+// Stratum task only. Swaps a waiting pool change into Settings; true if the
+// pool in use changed and has to be connected again (a backup changed while
+// the main pool is in use only needs swapping in). The monitor task, the
+// other reader of these fields, runs on the same core at a higher priority
+// and never blocks halfway through reading one, so it can't see a String
+// here half-assigned.
 static bool takePoolChange(void)
 {
   std::lock_guard<std::mutex> lock(g_settingsMutex);
   if (!s_poolChangePending)
     return false;
+  const TSettings &n = s_poolChange;
+  const bool mainChanged = n.PoolAddress != Settings.PoolAddress || n.PoolPort != Settings.PoolPort ||
+                           strcmp(n.BtcWallet, Settings.BtcWallet) != 0 ||
+                           strcmp(n.PoolPassword, Settings.PoolPassword) != 0;
+  const bool backupChanged = n.BackupPoolAddress != Settings.BackupPoolAddress ||
+                             n.BackupPoolPort != Settings.BackupPoolPort ||
+                             strcmp(n.BackupPoolPassword, Settings.BackupPoolPassword) != 0;
   copyPoolSettings(Settings, s_poolChange);
   s_poolChangePending = false;
+  if (!mainChanged && !(s_onBackup && backupChanged))
+    return false;
+  // A new main pool or wallet goes to the main pool; a changed backup in use
+  // stays on the backup unless it was removed.
+  s_onBackup = s_onBackup && !mainChanged && backupPoolSet();
+  s_poolFailures = 0;
+  s_backupSince = millis();
   return true;
 }
 
@@ -185,14 +291,14 @@ bool checkPoolConnection(void) {
   
   //Resolve first time pool DNS and save IP
   if(serverIP == IPAddress(1,1,1,1)) {
-    WiFi.hostByName(Settings.PoolAddress.c_str(), serverIP);
+    WiFi.hostByName(activePoolAddress().c_str(), serverIP);
     Serial.printf("Resolved DNS and save ip (first time) got: %s\n", serverIP.toString());
   }
 
   //Try connecting pool IP
-  if (!client.connect(serverIP, Settings.PoolPort)) {
-    Serial.println("Imposible to connect to : " + Settings.PoolAddress);
-    WiFi.hostByName(Settings.PoolAddress.c_str(), serverIP);
+  if (!client.connect(serverIP, activePoolPort())) {
+    Serial.println("Imposible to connect to : " + activePoolAddress());
+    WiFi.hostByName(activePoolAddress().c_str(), serverIP);
     Serial.printf("Resolved DNS got: %s\n", serverIP.toString());
     return false;
   }
@@ -319,6 +425,7 @@ static void MiningJobStop(uint32_t &job_pool, std::map<uint32_t, std::shared_ptr
   s_working_current_job_id = 0xFF;
   job_pool = 0xFFFFFFFF;
   submition_map.clear();
+  mMonitor.NerdStatus = NM_Connecting; // back to NM_hashing with the next job
 }
 
 #ifdef RANDOM_NONCE
@@ -369,21 +476,45 @@ void runStratumWorker(void *name) {
   uint32_t job_pool = 0xFFFFFFFF;
   uint32_t last_job_time = millis();
 
+  // Drops the pool and its jobs; the loop below looks up activePoolAddress()
+  // and connects to it.
+  auto dropPool = [&]() {
+    client.stop();
+    isMinerSuscribed = false;
+    MiningJobStop(job_pool, s_submition_map);
+    #if defined(PIPELINED_ASM_MINING) && defined(CONFIG_IDF_TARGET_ESP32)
+    s_pl_ctx.run = 0; // don't finish the old job's chunk
+    #endif
+    currentPoolDifficulty = DEFAULT_DIFFICULTY;
+    s_poolDifficulty = currentPoolDifficulty;
+    serverIP = IPAddress(1, 1, 1, 1);
+    poolSettingsChanged(); // monitor: pool stats URL and data
+  };
+  auto switchPool = [&](bool backup, const char *why) {
+    s_onBackup = backup;
+    s_poolFailures = 0;
+    s_backupSince = millis();
+    Serial.printf("[STRATUM] %s, switching to the %s pool %s:%d\n", why, backup ? "backup" : "main",
+                  activePoolAddress().c_str(), activePoolPort());
+    dropPool();
+  };
+  // A failed attempt on the pool in use; true if it moved to the other pool.
+  auto poolFailed = [&]() {
+    if (s_poolFailures < 255)
+      s_poolFailures++;
+    if (s_poolFailures < POOL_FAILOVER_TRIES || !backupPoolSet())
+      return false;
+    switchPool(!s_onBackup, s_onBackup ? "Backup pool not answering" : "Pool not answering");
+    return true;
+  };
+
   while(true) {
 
     if(takePoolChange()){
       // New pool settings from the LAN settings page: drop the old pool and
       // its jobs, look the new address up and connect to it below.
-      Serial.printf("[STRATUM] Pool settings changed, switching to %s:%d\n", Settings.PoolAddress.c_str(), Settings.PoolPort);
-      client.stop();
-      isMinerSuscribed = false;
-      MiningJobStop(job_pool, s_submition_map);
-      #if defined(PIPELINED_ASM_MINING) && defined(CONFIG_IDF_TARGET_ESP32)
-      s_pl_ctx.run = 0; // don't finish the old job's chunk
-      #endif
-      currentPoolDifficulty = DEFAULT_DIFFICULTY;
-      serverIP = IPAddress(1, 1, 1, 1);
-      poolSettingsChanged(); // monitor: pool stats URL and data
+      Serial.printf("[STRATUM] Pool settings changed, switching to %s:%d\n", activePoolAddress().c_str(), activePoolPort());
+      dropPool();
     }
 
     if(WiFi.status() != WL_CONNECTED){
@@ -396,9 +527,11 @@ void runStratumWorker(void *name) {
     } 
 
     if(!checkPoolConnection()){
+      MiningJobStop(job_pool, s_submition_map);
+      if (poolFailed())
+        continue; // try the other pool straight away
       //If server is not reachable add random delay for connection retries
       //Generate value between 1 and 60 secs
-      MiningJobStop(job_pool, s_submition_map);
       // A second at a time, so a pool fixed on the settings page is tried
       // straight away instead of after the rest of the wait.
       for (int s = 1 + rand() % 60; s > 0; s--) {
@@ -415,14 +548,15 @@ void runStratumWorker(void *name) {
       mWorker = init_mining_subscribe();
 
       // STEP 1: Pool server connection (SUBSCRIBE)
-      if(!tx_mining_subscribe(client, mWorker)) { 
+      if(!tx_mining_subscribe(client, mWorker)) {
         client.stop();
         MiningJobStop(job_pool, s_submition_map);
-        continue; 
+        poolFailed();
+        continue;
       }
-      
+
       strcpy(mWorker.wName, Settings.BtcWallet);
-      strcpy(mWorker.wPass, Settings.PoolPassword);
+      strcpy(mWorker.wPass, activePoolPassword());
       // STEP 2: Pool authorize work (Block Info)
       tx_mining_auth(client, mWorker.wName, mWorker.wPass); //Don't verifies authoritzation, TODO
       //tx_mining_auth2(client, mWorker.wName, mWorker.wPass); //Don't verifies authoritzation, TODO
@@ -443,7 +577,8 @@ void runStratumWorker(void *name) {
       client.stop();
       isMinerSuscribed=false;
       MiningJobStop(job_pool, s_submition_map);
-      continue; 
+      poolFailed();
+      continue;
     }
 
     {
@@ -455,8 +590,22 @@ void runStratumWorker(void *name) {
         client.stop();
         isMinerSuscribed=false;
         MiningJobStop(job_pool, s_submition_map);
+        poolFailed();
         continue;
       }
+    }
+
+    // On the backup: go back to the main pool once it answers again.
+    if (s_onBackup && millis() - s_backupSince >= POOL_FAILBACK_ms)
+    {
+      s_backupSince = millis();
+      if (mainPoolAnswers())
+      {
+        switchPool(false, "Main pool answers again");
+        continue;
+      }
+      Serial.printf("[STRATUM] Main pool %s:%d still not answering, staying on the backup\n",
+                    Settings.PoolAddress.c_str(), Settings.PoolPort);
     }
 
     uint32_t hw_midstate[8];
@@ -482,6 +631,8 @@ void runStratumWorker(void *name) {
                                           // the new chunks are pushed instead of idling the miners up front.
                                           //Increse templates readed
                                           templates++;
+                                          s_poolFailures = 0; // the pool works
+                                          mMonitor.NerdStatus = NM_hashing;
 
                                           last_job_time = millis();
                                           mLastTXtoPool = last_job_time;
@@ -579,12 +730,18 @@ void runStratumWorker(void *name) {
                                       }
                                       break;
           case MINING_SET_DIFFICULTY: parse_mining_set_difficulty(line, currentPoolDifficulty);
+                                      s_poolDifficulty = currentPoolDifficulty;
                                       break;
           case STRATUM_SUCCESS:       {
                                         unsigned long id = parse_extract_id(line);
                                         auto itt = s_submition_map.find(id);
                                         if (itt != s_submition_map.end())
                                         {
+                                          if (parse_extract_result(line))
+                                            s_sharesAccepted++;
+                                          else
+                                            s_sharesRejected++; // "result":false without an error
+
                                           if (itt->second->diff > best_diff)
                                             best_diff = itt->second->diff;
                                           if (itt->second->is32bit)
@@ -604,6 +761,7 @@ void runStratumWorker(void *name) {
                                         if (itt != s_submition_map.end())
                                         {
                                           Serial.printf("Refuse submition %d\n", id);
+                                          s_sharesRejected++;
                                           s_submition_map.erase(itt);
                                         }
                                       }
@@ -1930,6 +2088,9 @@ void runMonitor(void *name)
   totalKHashes = (Mhashes * 1000) + hashes / 1000;
   uint32_t last_update_millis = millis();
   uint32_t uptime_frac = 0;
+  s_bootKh = totalKHashes;
+  s_bootMs = last_update_millis;
+  statusRateSample(s_bootKh, s_bootMs);
 
   while (1)
   {
@@ -1981,6 +2142,7 @@ void runMonitor(void *name)
       unsigned long currentKHashes = (Mhashes * 1000) + hashes / 1000;
       elapsedKHs = currentKHashes - totalKHashes;
       totalKHashes = currentKHashes;
+      statusRateSample(currentKHashes, now_millis);
 
       uptime_frac += mElapsed;
       while (uptime_frac >= 1000)

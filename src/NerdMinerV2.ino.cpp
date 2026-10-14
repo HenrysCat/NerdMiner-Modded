@@ -159,7 +159,9 @@ void setup()
   // exclusively for the HW pipelined mining hot loop; see its
   // xTaskCreatePinnedToCore call below for why sharing a core with it at
   // any priority regresses hashrate.
-  BaseType_t res1 = xTaskCreatePinnedToCore(runMonitor, "Monitor", 9500, (void*)monitor_name, 5, NULL,0);
+  // 9500 overflowed (stack canary) when the pool-stats HTTPS fetch ran while
+  // the stratum task was reconnecting, seen right after pool switches.
+  BaseType_t res1 = xTaskCreatePinnedToCore(runMonitor, "Monitor", 12288, (void*)monitor_name, 5, NULL,0);
   #elif defined(S3_HW_MINER_OWNS_CORE1)
   BaseType_t res1 = xTaskCreatePinnedToCore(runMonitor, "Monitor", 10000, (void*)monitor_name, 5, NULL,0);
   #else

@@ -274,3 +274,11 @@ unsigned long parse_extract_id(const String &line)
 
     return id;
 }
+
+// A reply's "result": true when the pool accepted the submitted share.
+bool parse_extract_result(const String &line)
+{
+    if (deserializeJson(doc, line))
+        return false;
+    return doc["result"] | false;
+}

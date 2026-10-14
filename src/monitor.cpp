@@ -486,7 +486,7 @@ static bool heliosRegionStale(void) {
 
 String getHeliosRegion(void) {
     if (!heliosRegionStale()) return heliosRegion;
-    const String& host = Settings.PoolAddress;
+    const String& host = activePoolAddress();
     const char* named = NULL;
     for (const char* r : HELIOS_REGIONS) {
         if (host.indexOf(r) >= 0) named = r;
@@ -550,12 +550,15 @@ static bool heliosJudgeAnswer(int httpCode, int workers) {
 
 String getPoolAPIUrl(void) {
     std::lock_guard<std::mutex> lock(s_poolApiMutex);
+    // The pool being mined on: the main one, or the backup while it is down
+    const String& pool = activePoolAddress();
+    const int poolPort = activePoolPort();
     int style = POOL_API_PUBLICPOOL;
     String url = String(getPublicPool);
-    if (Settings.PoolAddress == "public-pool.io") {
+    if (pool == "public-pool.io") {
         url = "https://public-pool.io:40557/api/client/";
     }
-    else if (Settings.PoolAddress.indexOf("hmpool.io") >= 0) {
+    else if (pool.indexOf("hmpool.io") >= 0) {
         // hmpool runs one pool per coin (btc.hmpool.io, bch.hmpool.io,
         // digi.hmpool.io), each with its own stats API: asking the btc one
         // about a DGB address answers 200 with an empty worker list. Within
@@ -563,9 +566,9 @@ String getPoolAPIUrl(void) {
         // eu.digi.hmpool.io, ...) share one set of stats -- confirmed live
         // on both btc and digi -- so the region prefix is dropped.
         String coin = "btc";
-        const int coinEnd = Settings.PoolAddress.indexOf(".hmpool.io");
+        const int coinEnd = pool.indexOf(".hmpool.io");
         if (coinEnd > 0)
-            coin = Settings.PoolAddress.substring(Settings.PoolAddress.lastIndexOf('.', coinEnd - 1) + 1, coinEnd);
+            coin = pool.substring(pool.lastIndexOf('.', coinEnd - 1) + 1, coinEnd);
         if (coin == "btc") {
             // GET https://btc.hmpool.io/api/miner/<address>: hmpool's own
             // schema. It groups workers by name, so several miners sharing
@@ -581,7 +584,7 @@ String getPoolAPIUrl(void) {
             url = "https://" + coin + ".hmpool.io/api/client/";
         }
     }
-    else if (Settings.PoolAddress.indexOf("heliospool.") >= 0) {
+    else if (pool.indexOf("heliospool.") >= 0) {
         // heliospool.com/heliospool-api: each region's server publishes its
         // own stats at https://api-{coin}-{region}.heliospool.com/users/<address>
         // (the old btc.heliospool.{com,eu,asia}/api/users path is gone -- those
@@ -590,7 +593,7 @@ String getPoolAPIUrl(void) {
         style = POOL_API_CKPOOL;
     }
     else {
-        if (Settings.PoolAddress == "pool.nerdminers.org") {
+        if (pool == "pool.nerdminers.org") {
             // Runs a ckpool-solo fork (golden-guy/ckpool-solo@nerdminer_v2);
             // its per-user JSON at this same /users/<address> path uses the
             // same hashrate1hr/workers/bestever fields as heliospool.
@@ -598,17 +601,17 @@ String getPoolAPIUrl(void) {
             style = POOL_API_CKPOOL;
         }
         else {
-            switch (Settings.PoolPort) {
+            switch (poolPort) {
                 case 3333:
-                    if (Settings.PoolAddress == "pool.sethforprivacy.com")
+                    if (pool == "pool.sethforprivacy.com")
                         url = "https://pool.sethforprivacy.com/api/client/";
-                    if (Settings.PoolAddress == "pool.solomining.de")
+                    if (pool == "pool.solomining.de")
                         url = "https://pool.solomining.de/api/client/";
                     // Add more cases for other addresses with port 3333 if needed
                     break;
                 case 2018:
                     // Local instance of public-pool.io on Umbrel or Start9
-                    url = "http://" + Settings.PoolAddress + ":2019/api/client/";
+                    url = "http://" + pool + ":2019/api/client/";
                     break;
                 default:
                     url = String(getPublicPool);
@@ -647,7 +650,7 @@ pool_data getPoolData(void){
           // may not have run at all yet), and that connection can move to
           // another region's server later: work the URL out again whenever
           // it is missing or heliospool's region isn't current.
-          const bool heliosPool = Settings.PoolAddress.indexOf("heliospool.") >= 0;
+          const bool heliosPool = activePoolAddress().indexOf("heliospool.") >= 0;
           String apiUrl;
           {
               std::lock_guard<std::mutex> lock(s_poolApiMutex);
