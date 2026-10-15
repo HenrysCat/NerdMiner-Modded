@@ -265,12 +265,6 @@ With the USB-C port to the right:
 - One Click > turn the screen off and on again
 - Double click > change orientation (default is USB-C to the right)
 
-#### Build video
-
-[![Ver video aquí](https://img.youtube.com/vi/POUT2R_opDs/0.jpg)](https://youtu.be/POUT2R_opDs)
-
-## Developers
-
 ### Project guidelines
 
 - Current project was adapted to work with PlatformIO
@@ -303,11 +297,5 @@ With the USB-C port to the right:
 - [ ] Create new screen like clockMiner but with BTC price
 - [ ] Add support to control BM1397
 - [ ] Add password field in web configuration form
-
-### Donations/Project contributions
-
-If you would like to contribute and help dev team with this project you can send a donation to the following LN address ⚡teamnerdminer@getalby.com⚡ or using one of the affiliate links above.
-
-If you want to order a fully assembled Nerdminer you can contribute to my job at 🛒[bitronics.store](https://bitronics.store)🛒
 
 Enjoy
