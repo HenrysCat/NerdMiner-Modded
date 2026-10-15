@@ -45,13 +45,16 @@ static void show(uint32_t rgb)
 
 void rgbLedInit(void)
 {
+  // Off is written after attaching: ledcAttachPin takes the duty it reads back
+  // from a channel that has not run yet (0 = pin low = all three lit), so a
+  // write before it is lost.
   for (int i = 0; i < 3; i++)
   {
     ledcSetup(kFirstChannel + i, 5000, 8);
-    ledcWrite(kFirstChannel + i, 255); // off before the pin is attached
     ledcAttachPin(kPins[i], kFirstChannel + i);
+    ledcWrite(kFirstChannel + i, 255);
   }
-  s_shown = 0;
+  s_shown = 0xFFFFFFFF; // first rgbLedTick writes whatever it wants, off included
 }
 
 void rgbLedTick(void)
