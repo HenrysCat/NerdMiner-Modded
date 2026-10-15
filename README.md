@@ -265,12 +265,6 @@ With the USB-C port to the right:
 - One Click > turn the screen off and on again
 - Double click > change orientation (default is USB-C to the right)
 
-#### Build video
-
-[![Ver video aquí](https://img.youtube.com/vi/POUT2R_opDs/0.jpg)](https://youtu.be/POUT2R_opDs)
-
-## Developers
-
 ### Project guidelines
 
 - Current project was adapted to work with PlatformIO
