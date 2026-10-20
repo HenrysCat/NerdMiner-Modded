@@ -47,7 +47,7 @@ typedef enum {
 
 unsigned long getNextId(unsigned long id);
 bool verifyPayload (String* line);
-bool checkError(const StaticJsonDocument<BUFFER_JSON_DOC> doc);
+bool checkError(const StaticJsonDocument<BUFFER_JSON_DOC>& doc);
 
 //Method Mining.subscribe
 mining_subscribe init_mining_subscribe(void);

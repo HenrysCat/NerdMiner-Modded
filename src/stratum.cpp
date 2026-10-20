@@ -33,15 +33,34 @@ bool verifyPayload (String* line){
   
 }
 
-bool checkError(const StaticJsonDocument<BUFFER_JSON_DOC> doc) {
-  
+// Pools send the error either as [code, "message", data] or as {"code":..,"message":..}.
+// A missing field must not reach %s as NULL: that was a LoadProhibited reboot (issue #4).
+bool checkError(const StaticJsonDocument<BUFFER_JSON_DOC>& doc) {
+
   if (!doc.containsKey("error")) return false;
-  
-  if (doc["error"].size() == 0) return false;
 
-  Serial.printf("ERROR: %d | reason: %s \n", (const int) doc["error"][0], (const char*) doc["error"][1]);
+  JsonVariantConst err = doc["error"];
+  if (err.isNull()) return false;
 
-  return true;  
+  int code = 0;
+  const char* reason = nullptr;
+  if (err.is<JsonArrayConst>()) {
+    if (err.size() == 0) return false;
+    code = err[0] | 0;
+    reason = err[1];
+  } else if (err.is<JsonObjectConst>()) {
+    if (err.size() == 0) return false;
+    code = err["code"] | 0;
+    reason = err["message"];
+  } else if (err.is<const char*>()) {
+    reason = err.as<const char*>();
+  } else {
+    return false; // false / 0: not an error
+  }
+
+  Serial.printf("ERROR: %d | reason: %s \n", code, reason ? reason : "?");
+
+  return true;
 }
 
 

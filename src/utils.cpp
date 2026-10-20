@@ -208,24 +208,25 @@ miner_data calculateMiningData(mining_subscribe& mWorker, mining_job mJob){
       mMiner.bytearray_target[j] ^= mMiner.bytearray_target[size_target - 1 - j];
     }
 
-    // get extranonce2 - extranonce2 = hex(random.randint(0,2**32-1))[2:].zfill(2*extranonce2_size)
-    //To review
-    //char extranonce2_char[2 * mWorker.extranonce2_size+1];	
-	//mWorker.extranonce2.toCharArray(extranonce2_char, 2 * mWorker.extranonce2_size + 1);
-    //getNextExtranonce2(mWorker.extranonce2_size, extranonce2_char);
-    if (mWorker.extranonce2_size == 2)
-        mWorker.extranonce2 = "0001";
-    else if (mWorker.extranonce2_size == 4)
-        mWorker.extranonce2 = "00000001";
-    else if (mWorker.extranonce2_size == 8)
-        mWorker.extranonce2 = "0000000000000001";
-    else
+    // extranonce2: a new value for every job. Each job restarts the nonce range, so with a
+    // fixed extranonce2 a job the pool re-sends (same job_id/ntime, e.g. after set_difficulty)
+    // hashed the same header again and re-submitted the same share -> "duplicate share" (issue #4).
     {
-        Serial.println("Unknown extranonce2");
-        mWorker.extranonce2 = "00000001";
+        static uint32_t s_extranonce2 = 0;
+        int size = mWorker.extranonce2_size;
+        if (size < 1 || size > 16)
+        {
+            Serial.println("Unknown extranonce2");
+            size = 4;
+        }
+        char en2[2 * 16 + 1];
+        uint32_t v = ++s_extranonce2;
+        for (int i = 2 * size - 1; i >= 0; --i, v >>= 4)
+            en2[i] = "0123456789abcdef"[v & 0xF];
+        en2[2 * size] = 0;
+        mWorker.extranonce2 = en2;
     }
-    //mWorker.extranonce2 = "00000002";
-    
+
     //get coinbase - coinbase_hash_bin = hashlib.sha256(hashlib.sha256(binascii.unhexlify(coinbase)).digest()).digest()
     // Use char buffer instead of String concatenation to avoid memory leaks
     static char coinbase_buffer[512]; // Static buffer to avoid repeated allocation
