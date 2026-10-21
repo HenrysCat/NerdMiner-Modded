@@ -112,8 +112,12 @@ bool nvMemory::loadConfig(TSettings* Settings)
                 if (!error)
                 {
                     Settings->PoolAddress = json[JSON_SPIFFS_KEY_POOLURL] | Settings->PoolAddress;
-                    strcpy(Settings->PoolPassword, json[JSON_SPIFFS_KEY_POOLPASS] | Settings->PoolPassword);
-                    strcpy(Settings->BtcWallet, json[JSON_SPIFFS_KEY_WALLETID] | Settings->BtcWallet);
+                    // bounded copies, and none at all when the key is missing (the stock
+                    // strcpy then copied the field onto itself)
+                    if (const char *v = json[JSON_SPIFFS_KEY_POOLPASS].as<const char *>())
+                        strlcpy(Settings->PoolPassword, v, sizeof(Settings->PoolPassword));
+                    if (const char *v = json[JSON_SPIFFS_KEY_WALLETID].as<const char *>())
+                        strlcpy(Settings->BtcWallet, v, sizeof(Settings->BtcWallet));
                     if (json.containsKey(JSON_SPIFFS_KEY_POOLPORT))
                         Settings->PoolPort = json[JSON_SPIFFS_KEY_POOLPORT].as<int>();
                     Settings->BackupPoolAddress = json[JSON_SPIFFS_KEY_BACKUPPOOLURL] | Settings->BackupPoolAddress;

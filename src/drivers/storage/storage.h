@@ -16,7 +16,11 @@
 #define DEFAULT_POOLPASS	"x"
 #define DEFAULT_WALLETID	"yourBtcAddress"
 #define DEFAULT_POOLPORT	3333
+#ifdef AUTO_DST_EU
+#define DEFAULT_TIMEZONE	1	// winter offset, summer time added automatically
+#else
 #define DEFAULT_TIMEZONE	2
+#endif
 #define DEFAULT_SAVESTATS	false
 #define DEFAULT_INVERTCOLORS	false
 #define DEFAULT_BRIGHTNESS	250

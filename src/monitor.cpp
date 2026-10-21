@@ -14,6 +14,10 @@
 #include "drivers/storage/storage.h"
 #include "drivers/devices/device.h"
 #include "currency.h"
+#include "timeutil.h"
+#ifdef M5STICK_C_PLUS2
+#include "m5stickPlus2Hw.h"
+#endif
 
 extern uint32_t templates;
 extern uint32_t hashes;
@@ -22,8 +26,8 @@ extern uint32_t totalKHashes;
 extern uint32_t elapsedKHs;
 extern uint64_t upTime;
 
-extern uint32_t shares; // increase if blockhash has 32 bits of zeroes
-extern uint32_t valids; // increased if blockhash <= targethalfshares
+extern volatile uint32_t shares; // increase if blockhash has 32 bits of zeroes
+extern volatile uint32_t valids; // increased if blockhash <= targethalfshares
 
 extern double best_diff; // track best diff
 
@@ -90,15 +94,35 @@ void setup_monitor(void){
 // block height, fees, difficulty and network hashrate empty.
 unsigned long mGlobalUpdate =0;
 
+// Every fetch below pauses the hardware miner for its whole duration (TLS
+// handshake under g_hwShaMutex, see above). They used to remember only the
+// last SUCCESS, so a failing one (CoinGecko "429 Too Many Requests", internet
+// down with WiFi still up...) was retried on every screen refresh, once a
+// second, each attempt holding the miner for up to the 10 s timeout. Now a
+// failed fetch waits FETCH_RETRY_ms before the next try, and the timeout is
+// shorter.
+#define FETCH_RETRY_ms   60000
+#define FETCH_TIMEOUT_ms 5000
+static bool fetchDue(unsigned long lastOk, unsigned long &lastTry, unsigned long periodMs)
+{
+    if (WiFi.status() != WL_CONNECTED) return false;
+    const unsigned long now = millis();
+    if (lastOk != 0 && now - lastOk <= periodMs) return false;
+    if (lastTry != 0 && now - lastTry < FETCH_RETRY_ms) return false;
+    lastTry = now;
+    return true;
+}
+static unsigned long mGlobalTry = 0;
+static unsigned long mHeightTry = 0;
+static unsigned long mBTCTry = 0;
+
 void updateGlobalData(void){
     
-    if((mGlobalUpdate == 0) || (millis() - mGlobalUpdate > UPDATE_Global_min * 60 * 1000)){
-    
-        if (WiFi.status() != WL_CONNECTED) return;
+    if(fetchDue(mGlobalUpdate, mGlobalTry, UPDATE_Global_min * 60 * 1000)){
             
         //Make first API call to get global hash and current difficulty
         HTTPClient http;
-        http.setTimeout(10000);
+        http.setTimeout(FETCH_TIMEOUT_ms);
         try {
         http.begin(getGlobalHash);
         int httpCode;
@@ -156,15 +180,14 @@ void updateGlobalData(void){
 }
 
 unsigned long mHeightUpdate = 0;
+static volatile uint32_t s_blockHeight = 0; // numeric copy, safe to read from any task
 
 String getBlockHeight(void){
     
-    if((mHeightUpdate == 0) || (millis() - mHeightUpdate > UPDATE_Height_min * 60 * 1000)){
-    
-        if (WiFi.status() != WL_CONNECTED) return current_block;
+    if(fetchDue(mHeightUpdate, mHeightTry, UPDATE_Height_min * 60 * 1000)){
             
         HTTPClient http;
-        http.setTimeout(10000);
+        http.setTimeout(FETCH_TIMEOUT_ms);
         try {
         http.begin(getHeightAPI);
         int httpCode;
@@ -175,6 +198,7 @@ String getBlockHeight(void){
             payload.trim();
 
             current_block = payload;
+            s_blockHeight = (uint32_t)payload.toInt();
 
             mHeightUpdate = millis();
         }        
@@ -194,16 +218,10 @@ String getBTCprice(void){
     const CurrencyInfo &cur = currencyFor(Settings.Currency);
     static char price_buffer[24];
 
-    if((mBTCUpdate == 0) || (millis() - mBTCUpdate > UPDATE_BTC_min * 60 * 1000)){
-
-        if (WiFi.status() != WL_CONNECTED) {
-            snprintf(price_buffer, sizeof(price_buffer), "%s%u", cur.prefix, bitcoin_price);
-            return String(price_buffer);
-        }
+    if(fetchDue(mBTCUpdate, mBTCTry, UPDATE_BTC_min * 60 * 1000)){
 
         HTTPClient http;
-        http.setTimeout(10000);
-        bool priceUpdated = false;
+        http.setTimeout(FETCH_TIMEOUT_ms);
 
         try {
         http.begin(String(getBTCAPI) + cur.code);
@@ -241,53 +259,172 @@ unsigned long initialMillis = millis();
 unsigned long initialTime = 0;
 unsigned long mPoolUpdate = 0;
 
+// ---------------------------------------------------------------------------
+// Clock
+//
+// initialTime is local STANDARD time (UTC + Settings.Timezone hours, as the
+// NTP client returns it) taken at millis() == mTriggerUpdate.
+//  - AUTO_DST_EU: Settings.Timezone is the winter offset (1 for France) and
+//    the EU summer-time hour is added on top, so the clock changes by itself
+//    on the last Sundays of March and October.
+//  - M5StickC Plus2: until the first NTP answer the time comes from the
+//    on-board BM8563 RTC (kept in UTC, written after every NTP sync), so the
+//    clock is right as soon as the stick is switched on, even without WiFi.
+// ---------------------------------------------------------------------------
+#ifdef M5STICK_C_PLUS2
+// Read once, by the monitor task only. Other tasks (web server) only look at
+// the result once s_rtcOk is set, after both values are fully written: a
+// 64-bit value read while the other core writes it could come out half old,
+// half new.
+static bool s_rtcTried = false;
+static volatile bool s_rtcOk = false;
+static int64_t s_rtcUtc = 0;            // RTC time read at boot...
+static unsigned long s_rtcMillis = 0;   // ...at this millis()
+
+static void rtcSeedOnce()
+{
+  if (s_rtcTried) return;
+  s_rtcTried = true;
+  int64_t utc;
+  if (plus2RtcRead(utc)) {
+    s_rtcUtc = utc;
+    s_rtcMillis = millis();
+    __sync_synchronize(); // both stored before the flag is seen by the other core
+    s_rtcOk = true;
+    Serial.println("Clock set from the on-board RTC");
+  } else {
+    Serial.println("On-board RTC not set yet (waiting for NTP)");
+  }
+}
+#endif
+
+// UTC now, from NTP if synced, otherwise from the RTC (Plus2). False if neither.
+// seedRtc: only the monitor task may read the RTC chip (see rtcSeedOnce).
+static bool utcNow(int64_t &utc, bool seedRtc = true)
+{
+  if (mTriggerUpdate != 0) {
+    utc = (int64_t)(initialTime + (millis() - mTriggerUpdate) / 1000) - 3600L * s_appliedTimezone;
+    return true;
+  }
+#ifdef M5STICK_C_PLUS2
+  if (seedRtc) rtcSeedOnce();
+  if (s_rtcOk) {
+    __sync_synchronize();
+    utc = s_rtcUtc + (int64_t)((millis() - s_rtcMillis) / 1000);
+    return true;
+  }
+#endif
+  return false;
+}
+
+// Summer-time offset in seconds for a UTC time (0 without AUTO_DST_EU)
+static long dstOffsetAt(int64_t utc)
+{
+#ifdef AUTO_DST_EU
+  return tu_euSummerTime(utc) ? 3600 : 0;
+#else
+  (void)utc;
+  return 0;
+#endif
+}
+
+long currentDstOffset(void)
+{
+  int64_t utc;
+  return utcNow(utc, false) ? dstOffsetAt(utc) : 0; // also called from the web server task
+}
+
+// Local wall-clock time in seconds since 1970 (what the screens show).
+static int64_t localNow()
+{
+  int64_t utc;
+  if (!utcNow(utc)) // not set yet: elapsed time since boot (screens show "--")
+    return (int64_t)(initialTime + (millis() - mTriggerUpdate) / 1000);
+  return utc + 3600L * s_appliedTimezone + dstOffsetAt(utc);
+}
+
+// Display helpers: lets a screen show "--" instead of a made-up value
+// (00:00 before the clock is set, the hard-coded default block height,
+// a price of 0) until real data has arrived.
+bool isTimeSynced(void)
+{
+  int64_t utc;
+  return utcNow(utc);
+}
+bool isBlockHeightKnown(void) { return mHeightUpdate != 0; }
+uint32_t getBlockHeightValue(void) { return mHeightUpdate != 0 ? s_blockHeight : 0; }
+
+// Local date and time WITHOUT ever starting an NTP request (NTPClient is not
+// thread safe and is driven by the monitor task): for the web server task.
+bool getLocalClock(int &hour, int &minute, int &second, int &day, int &month, int &year)
+{
+  int64_t utc;
+  if (!utcNow(utc, false)) // web server task: never touches the RTC chip itself
+    return false;
+  const int64_t now = utc + 3600L * s_appliedTimezone + dstOffsetAt(utc);
+  const int64_t days = tu_daysOf(now);
+  const int64_t secs = now - days * 86400;
+  hour = secs / 3600;
+  minute = secs % 3600 / 60;
+  second = secs % 60;
+  unsigned m, d;
+  tu_civilFromDays(days, year, m, d);
+  month = m;
+  day = d;
+  return true;
+}
+unsigned int getBTCpriceValue(void) { return bitcoin_price; }
+
 void getTime(unsigned long* currentHours, unsigned long* currentMinutes, unsigned long* currentSeconds){
   
   //Check if need an NTP call to check current time
   if((mTriggerUpdate == 0) || (millis() - mTriggerUpdate > UPDATE_PERIOD_h * 60 * 60 * 1000)){ //60 sec. * 60 min * 1000ms
     if(WiFi.status() == WL_CONNECTED) {
-        if(timeClient.update()) mTriggerUpdate = millis(); //NTP call to get current time
-        initialTime = timeClient.getEpochTime(); // Guarda la hora inicial (en segundos desde 1970)
-        Serial.print("TimeClient NTPupdateTime ");
+        // initialTime and mTriggerUpdate must always change together: taking
+        // a new initialTime after a FAILED sync (old mTriggerUpdate kept)
+        // counted the time since the last good sync twice, so the clock ran
+        // up to several hours ahead until an NTP request succeeded again.
+        if(timeClient.update()) { //NTP call to get current time
+            mTriggerUpdate = millis();
+            initialTime = timeClient.getEpochTime(); // Guarda la hora inicial (en segundos desde 1970)
+            Serial.println("TimeClient NTPupdateTime");
+#ifdef M5STICK_C_PLUS2
+            if (plus2RtcWrite((int64_t)initialTime - 3600L * s_appliedTimezone))
+                Serial.println("On-board RTC set from NTP");
+#endif
+        }
     }
   }
 
-  unsigned long elapsedTime = (millis() - mTriggerUpdate) / 1000; // Tiempo transcurrido en segundos
-  unsigned long currentTime = initialTime + elapsedTime; // La hora actual
+  const int64_t now = localNow();
+  const int64_t secs = now - tu_daysOf(now) * 86400; // seconds into the day
 
   // convierte la hora actual en horas, minutos y segundos
-  *currentHours = currentTime % 86400 / 3600;
-  *currentMinutes = currentTime % 3600 / 60;
-  *currentSeconds = currentTime % 60;
+  *currentHours = secs / 3600;
+  *currentMinutes = secs % 3600 / 60;
+  *currentSeconds = secs % 60;
 }
 
-// UTC now; false until the clock has been set from NTP. With sync (monitor
-// task only) the NTP call is made here when it is due, as getTime() does.
+// UTC now; false until the clock has been set (NTP, or the RTC on the Plus2).
+// With sync (monitor task only) the NTP call is made here when it is due, as
+// getTime() does.
 bool getUtcTime(time_t &utc, bool sync){
   if (sync) {
     unsigned long h, m, s;
     getTime(&h, &m, &s);
   }
-  if (mTriggerUpdate == 0) return false;
-  utc = (time_t)(initialTime + (millis() - mTriggerUpdate) / 1000) - 3600L * s_appliedTimezone;
+  int64_t u;
+  if (!utcNow(u, sync)) return false; // sync == monitor task: the only one allowed to read the RTC chip
+  utc = (time_t)u;
   return true;
 }
 
 String getDate(){
-  
-  unsigned long elapsedTime = (millis() - mTriggerUpdate) / 1000; // Tiempo transcurrido en segundos
-  unsigned long currentTime = initialTime + elapsedTime; // La hora actual
-
-  // Convierte la hora actual (epoch time) en una estructura tm
-  struct tm *tm = localtime((time_t *)&currentTime);
-
-  int year = tm->tm_year + 1900; // tm_year es el número de años desde 1900
-  int month = tm->tm_mon + 1;    // tm_mon es el mes del año desde 0 (enero) hasta 11 (diciembre)
-  int day = tm->tm_mday;         // tm_mday es el día del mes
+  int y; unsigned m, d;
+  tu_civilFromDays(tu_daysOf(localNow()), y, m, d);
 
   char currentDate[20];
-  sprintf(currentDate, "%02d/%02d/%04d", tm->tm_mday, tm->tm_mon + 1, tm->tm_year + 1900);
-
+  snprintf(currentDate, sizeof(currentDate), "%02u/%02u/%04d", d, m, y);
   return String(currentDate);
 }
 
@@ -376,7 +513,7 @@ mining_data getMiningData(unsigned long mElapsed)
   mining_data data;
 
   char best_diff_string[16] = {0};
-  suffix_string(best_diff, best_diff_string, 16, 0);
+  suffix_string(getBestDiff(), best_diff_string, 16, 0);
 
   char timeMining[15] = {0};
   uint64_t tm = upTime;
@@ -845,6 +982,7 @@ void applyPendingSettings(void) {
     if (currencyChanged) {
         bitcoin_price = 0; // the last figure is in the old currency
         mBTCUpdate = 0;    // fetch the price again next time it's shown
+        mBTCTry = 0;       // ...right away, not after the retry delay
     }
 
     if (s_poolChanged.exchange(false)) {
