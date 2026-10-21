@@ -167,11 +167,11 @@ stratum_method parse_mining_method(String line)
     if (error || checkError(doc)) return STRATUM_PARSE_ERROR;
 
     if (!doc.containsKey("method")) {
-      // "error":null means success
-      if (doc["error"].isNull())
-        return STRATUM_SUCCESS;
-      else
-        return STRATUM_UNKNOWN;
+      // A reply. checkError() above already caught a real error, so what is
+      // left ("error": null, missing, or false/0 as some pools send) is a
+      // success; "error": false used to fall into STRATUM_UNKNOWN and the
+      // share was never counted.
+      return STRATUM_SUCCESS;
     }
     stratum_method result = STRATUM_UNKNOWN;
 

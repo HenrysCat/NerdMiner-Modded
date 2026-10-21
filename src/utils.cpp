@@ -36,13 +36,19 @@ int to_byte_array(const char *in, size_t in_size, uint8_t *out) {
             if (!*in)
                 return count;
             *out = (*out << 4) | hex(*in++);
-            *out++;
+            out++;
             count++;
         }
         return count;
     } else {
         while (*in && out) {
-            *out++ = (hex(*in++) << 4) | hex(*in++);
+            // two statements: in "hex(*in++) << 4 | hex(*in++)" the order of the
+            // two reads is unspecified, the compiler was free to swap the nibbles
+            const uint8_t hi = hex(*in++);
+            if (!*in)
+                return count; // odd number of digits: drop the last one
+            const uint8_t lo = hex(*in++);
+            *out++ = (hi << 4) | lo;
             count++;
         }
         return count;
@@ -122,16 +128,33 @@ bool isSha256Valid(const void* sha256)
 /****************** PREMINING CALCULATIONS ********************/
 
 
-bool checkValid(unsigned char* hash, unsigned char* target) {
-  bool valid = true;
-  unsigned char diff_target[32];
-  memcpy(diff_target, &target, 32);
-  //convert target to little endian for comparison
-  reverse_bytes(diff_target, 32);
-
-  for(uint8_t i=31; i>=0; i--) {
-    if(hash[i] > diff_target[i]) {
-      valid = false;
+// True when a hash reaches the network target, i.e. it would make a block.
+// hash: 32 bytes as the miner produces them (little-endian: byte 31 is the
+// most significant). nbits: the job's compact target in hex, "17034219" =
+// 0x034219 * 256^(0x17 - 3).
+// The stock version compared the hash with the bytes of the target POINTER
+// (memcpy of &target) plus whatever followed it on the stack, and its
+// "uint8_t i >= 0" loop could only end on a mismatch, reading past the hash:
+// the result was random, which could count (and celebrate) a block that was
+// never found.
+bool checkValid(const unsigned char* hash, const char* nbitsHex) {
+  if (!hash || !nbitsHex)
+    return false;
+  const uint32_t nbits = strtoul(nbitsHex, NULL, 16);
+  if (nbits == 0 || (nbits & 0x00800000))
+    return false; // no target / negative target: nothing can be valid
+  uint8_t target[32] = {0}; // little-endian, like the hash
+  const int exponent = nbits >> 24;
+  const uint32_t mantissa = nbits & 0x007FFFFF;
+  for (int k = 0; k < 3; k++) {
+    const int pos = exponent - 3 + k;
+    if (pos >= 0 && pos < 32)
+      target[pos] = (mantissa >> (8 * k)) & 0xFF;
+  }
+  bool valid = true; // equal counts as valid (hash <= target)
+  for (int i = 31; i >= 0; i--) {
+    if (hash[i] != target[i]) {
+      valid = hash[i] < target[i];
       break;
     }
   }
@@ -322,7 +345,7 @@ miner_data calculateMiningData(mining_subscribe& mWorker, mining_job mJob){
       Serial.printf("%02x", mMiner.merkle_result[i]);
       snprintf(&merkle_root[i*2], 3, "%02x", mMiner.merkle_result[i]);
     }
-    merkle_root[65] = 0;
+    merkle_root[64] = 0; // 64 hex digits; [65] was one byte past the end
     Serial.println("");
 
     // calculate blockheader

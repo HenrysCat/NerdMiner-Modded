@@ -45,6 +45,38 @@
   OneButton button2(PIN_BUTTON_2);
 #endif
 
+#ifdef PIN_BUTTON_POWER
+  // Power button: active low, external pull-up (GPIO34-39 have no internal pulls)
+  OneButton buttonPower(PIN_BUTTON_POWER, true, false);
+#endif
+
+#if defined(M5STICK_C_PLUS2) && defined(PIN_POWER_HOLD)
+#include "driver/gpio.h"
+#include "esp_sleep.h"
+// Release the power-hold latch. On battery the stick switches off right away;
+// on USB power it keeps running, so fall back to deep sleep and wake up again
+// on the power button.
+void m5stickPlus2PowerOff()
+{
+  Serial.println("Power off requested");
+  saveStat(); // keep the shares / best diff mined since the last periodic save
+#if PLUS2_BACKLIGHT_PWM
+  ledcWrite(0, 0);                 // backlight off (LEDC channel 0, see tDisplayV1Driver.cpp)
+#else
+  digitalWrite(TFT_BL_PIN, LOW);   // backlight off
+#endif
+  digitalWrite(LED_PIN, LOW);
+  delay(100);
+  gpio_hold_dis((gpio_num_t)PIN_POWER_HOLD);
+  digitalWrite(PIN_POWER_HOLD, LOW);
+  delay(1000);
+  // Still alive -> powered by USB
+  while (digitalRead(PIN_BUTTON_POWER) == LOW) delay(10); // wait for release
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_BUTTON_POWER, 0);
+  esp_deep_sleep_start();
+}
+#endif
+
 #ifdef TOUCH_ENABLE
 extern TouchHandler touchHandler;
 #endif
@@ -69,7 +101,8 @@ const char* ntpServer = "pool.ntp.org";
 void setup()
 {
       //Init pin 15 to eneble 5V external power (LilyGo bug)
-      //Also used as power-hold latch on M5StickC Plus2 (GPIO4)
+      //(M5StickC Plus2 power-hold latch on GPIO4 is set earlier, in
+      // boards/variants/m5stick_c_plus2/variant.cpp -> initVariant())
   #ifdef PIN_ENABLE5V
       pinMode(PIN_ENABLE5V, OUTPUT);
       digitalWrite(PIN_ENABLE5V, HIGH);
@@ -128,6 +161,11 @@ void setup()
   #ifdef TDISPLAY_PULSE
     extern void tDisplayPulseNextAccent(void);
     button2.attachDoubleClick(tDisplayPulseNextAccent); // next accent colour
+  #endif
+
+  #if defined(PIN_BUTTON_POWER) && defined(M5STICK_C_PLUS2)
+    buttonPower.setPressMs(2*SECOND_MS);
+    buttonPower.attachLongPressStart(m5stickPlus2PowerOff);
   #endif
 
   /******** INIT NERDMINER ************/
@@ -268,6 +306,24 @@ void loop() {
 
   #ifdef PIN_BUTTON_2
     button2.tick();
+  #endif
+
+  #ifdef PIN_BUTTON_POWER
+    // The power button is held down to switch the stick on: only start
+    // watching it once it has read "released" for a full second in a row, so
+    // a long power-on press (or a noisy line) can never start a power-off.
+    static bool powerButtonArmed = false;
+    static uint32_t powerReleasedSince = 0;
+    if (!powerButtonArmed) {
+      if (digitalRead(PIN_BUTTON_POWER) == HIGH) {
+        if (powerReleasedSince == 0) powerReleasedSince = millis();
+        else if (millis() - powerReleasedSince >= 1000) powerButtonArmed = true;
+      } else {
+        powerReleasedSince = 0;
+      }
+    } else {
+      buttonPower.tick();
+    }
   #endif
 
 #ifdef TOUCH_ENABLE
