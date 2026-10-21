@@ -987,7 +987,14 @@ void minerWorkerSw(void * task_id)
         #ifdef DEBUG_MINING
         (*myDebugCounter)++;
         #endif
+#if defined(CONFIG_IDF_TARGET_ESP32)
+        // Assembly prefilter first; the C version only runs for the 1 nonce in
+        // 65536 that passes it, to produce the hash.
+        if (nerd_sha256d_prefilter(job->midstate, job->sha_buffer+64, job->bake) &&
+            nerd_sha256d_baked(job->midstate, job->sha_buffer+64, job->bake, hash))
+#else
         if (nerd_sha256d_baked(job->midstate, job->sha_buffer+64, job->bake, hash))
+#endif
         {
           double diff_hash = diff_from_target(hash);
           updateBestDiff(diff_hash);
