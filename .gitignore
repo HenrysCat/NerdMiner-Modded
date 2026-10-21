@@ -12,3 +12,4 @@ boards/ESP32_wroom_guide.md
 firmware/
 
 __pycache__/
+compile_commands.json
