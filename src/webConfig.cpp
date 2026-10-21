@@ -349,7 +349,7 @@ static void handleSave()
     webCfgServer.send(200, "text/html",
                       "<!DOCTYPE html><html><head><meta charset='utf-8'>"
                       "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-                      "<meta http-equiv='refresh' content='3;url=/'></head>"
+                      "<meta http-equiv='refresh' content='3;url=/settings'></head>"
                       "<body style='font-family:sans-serif'>" + msg +
                       "<p><a href='/settings'>Back to settings</a></p></body></html>");
     return;

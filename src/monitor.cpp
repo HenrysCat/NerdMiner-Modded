@@ -838,7 +838,6 @@ pool_data getPoolData(void){
                   char best_diff_string[16] = {0};
                   suffix_string(temp, best_diff_string, 16, 0);
                   pData.bestDifficulty = String(best_diff_string);
-                  updateBestDiff(temp); // pool best-ever share: see the public-pool case
                 }
                 doc.clear();
               } else if (apiStyle == POOL_API_HMPOOL) {
@@ -870,7 +869,6 @@ pool_data getPoolData(void){
                   char best_diff_string[16] = {0};
                   suffix_string(temp, best_diff_string, 16, 0);
                   pData.bestDifficulty = String(best_diff_string);
-                  updateBestDiff(temp); // pool best-ever share: see the public-pool case
                 }
                 doc.clear();
               } else {
@@ -901,11 +899,6 @@ pool_data getPoolData(void){
                 char best_diff_string[16] = {0};
                 suffix_string(temp, best_diff_string, 16, 0);
                 pData.bestDifficulty = String(best_diff_string);
-                // The pool keeps the best share of this address for good,
-                // the miner only since its last boot (and 0 after every
-                // flash when "Save mining statistics" is off): take the
-                // pool's when it is higher, so both show the same value.
-                updateBestDiff(temp);
                 }
                 doc.clear();
               }

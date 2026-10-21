@@ -2121,11 +2121,15 @@ static uint32_t statsRecordV1Crc(const StatsRecordV1 &r)
 }
 
 // Reads a slot in either format; a v1 record comes back as v2 (0 refused).
-static bool readStatsSlot(const char *key, StatsRecord &r)
+// missing: the key doesn't exist yet (only one save so far), as opposed to a
+// slot that is there but unreadable.
+static bool readStatsSlot(const char *key, StatsRecord &r, bool &missing)
 {
   union { StatsRecord v2; StatsRecordV1 v1; } buf;
   size_t size = sizeof(buf);
-  if (nvs_get_blob(stat_handle, key, &buf, &size) != ESP_OK)
+  const esp_err_t err = nvs_get_blob(stat_handle, key, &buf, &size);
+  missing = (err == ESP_ERR_NVS_NOT_FOUND);
+  if (err != ESP_OK)
     return false;
   if (size == sizeof(StatsRecord) && buf.v2.magic == STATS_MAGIC && buf.v2.crc == statsRecordCrc(buf.v2)) {
     r = buf.v2;
@@ -2200,8 +2204,9 @@ void restoreStat() {
 
   std::lock_guard<std::mutex> lock(s_statsMutex);
   StatsRecord a, b;
-  const bool okA = readStatsSlot("statA", a);
-  const bool okB = readStatsSlot("statB", b);
+  bool missingA, missingB;
+  const bool okA = readStatsSlot("statA", a, missingA);
+  const bool okB = readStatsSlot("statB", b, missingB);
   if (okA || okB) {
     // newest valid slot (sequence compare that survives the 32-bit wrap)
     const StatsRecord &r = (okA && (!okB || (int32_t)(a.seq - b.seq) > 0)) ? a : b;
@@ -2213,8 +2218,9 @@ void restoreStat() {
     shares32Rejected = r.shares32Rejected;
     upTime = r.upTime;
     s_statsSeq = r.seq;
+    const bool otherMissing = (&r == &a) ? missingB : missingA;
     Serial.printf("[MONITOR] Stats restored from slot %s (save #%u)%s\n", &r == &a ? "A" : "B",
-                  (unsigned)r.seq, (okA && okB) ? "" : ", other slot empty or damaged");
+                  (unsigned)r.seq, (okA && okB) ? "" : otherMissing ? ", other slot empty" : ", other slot damaged");
   } else if (readLegacyStats()) {
     shares32Rejected = 0;
     s_statsSeq = 0;

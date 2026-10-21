@@ -65,9 +65,4 @@
 // 135x240 ST7789, same layout as the LilyGo T-Display V1
 #define V1_DISPLAY
 
-// Ask the pool's stats API (every UPDATE_POOL_min) for the best share of the
-// wallet, so BEST DIFF matches the pool's dashboard. Also picks the right
-// API for the pool in use (public-pool, hmpool, heliospool, nerdminers...).
-#define SCREEN_WORKERS_ENABLE (1)
-
 #endif

@@ -235,12 +235,6 @@ void tDisplay_MinerScreen(unsigned long mElapsed)
 {
   if (restoreSavedScreen(mElapsed)) return;
 
-#if defined(M5STICK_C_PLUS2)
-  // Pool stats: only its best share is used here (merged into BEST DIFF by
-  // getPoolData). Throttled inside to one HTTPS call per UPDATE_POOL_min.
-  getPoolData();
-#endif
-
   mining_data data = getMiningData(mElapsed);
 
   // Print background screen (240x128 image, see pushBackground)
@@ -249,10 +243,17 @@ void tDisplay_MinerScreen(unsigned long mElapsed)
   Serial.printf(">>> Completed %s share(s), %s Khashes, avg. hashrate %s KH/s\n",
                 data.completedShares.c_str(), data.totalKHashes.c_str(), data.currentHashRate.c_str());
 
-  // Hashrate: size 26 so "970.0" fits left of "KH/s" (30 cut the first digit)
-  render.setFontSize(26);
   render.setFontColor(TFT_BLACK);
+#if defined(M5STICK_C_PLUS2)
+  // Hashrate: ~1 MH/s here, size 26 so "970.0" / "1003" fit left of "KH/s"
+  // (30 cut the first digit)
+  render.setFontSize(26);
   render.rdrawString(data.currentHashRate.c_str(), 96, 93, TFT_BLACK);
+#else
+  // Hashrate (stock size: "400.8" fits fine on the T-Display)
+  render.setFontSize(30);
+  render.rdrawString(data.currentHashRate.c_str(), 96, 90, TFT_BLACK);
+#endif
   // Total hashes
   render.setFontSize(13);
   render.rdrawString(data.totalMHashes.c_str(), 200, 106, TFT_BLACK);
@@ -307,23 +308,25 @@ void tDisplay_MinerScreen(unsigned long mElapsed)
   render.setFontSize(19);
   render.drawString(data.valids.c_str(), 210, 45, 0xDEDB);
 
-#if defined(M5STICK_C_PLUS2) && defined(PIN_BATTERY_ADC)
+#if defined(M5STICK_C_PLUS2)
+#if defined(PIN_BATTERY_ADC)
   // Battery level, on the black area left of the grey banner
   drawBattery();
-#else
-  // Chip temperature, on the black area left of the grey banner (it used to
-  // run into the time inside the banner)
-  render.setFontSize(10);
-  render.rdrawString(data.temp.c_str(), 148, 1, 0xDEDB);
-  render.setFontSize(4);
-  render.drawString("0", 149, 1, 0xDEDB); // degree sign
 #endif
-
   // Time, inside the banner and clear of the pickaxe/WiFi icons (x >= 212)
   if (isTimeSynced()) {
     render.setFontSize(10);
     render.rdrawString(data.currentTime.c_str(), 208, 1, TFT_BLACK);
   }
+#else
+  // Stock top bar: temperature and time inside the grey banner
+  render.setFontSize(8);
+  render.rdrawString(data.temp.c_str(), 180, 1, TFT_BLACK);
+  render.setFontSize(3);
+  render.rdrawString(String(0).c_str(), 184, 2, TFT_BLACK); // degree sign
+  render.setFontSize(8);
+  render.rdrawString(data.currentTime.c_str(), 215, 1, TFT_BLACK);
+#endif
 
   // Push prepared background to screen
   background.pushSprite(0, 0);
@@ -579,9 +582,9 @@ static void batteryGuardTick()
   tft.fillScreen(TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_RED, TFT_BLACK);
-  tft.drawString("Batterie faible", WIDTH / 2, HEIGHT / 2 - 14, 4);
+  tft.drawString("Low battery", WIDTH / 2, HEIGHT / 2 - 14, 4);
   tft.setTextColor(0xDEDB, TFT_BLACK);
-  tft.drawString("Arret... rechargez le stick", WIDTH / 2, HEIGHT / 2 + 16, 2);
+  tft.drawString("Powering off... please charge", WIDTH / 2, HEIGHT / 2 + 16, 2);
   tft.setTextDatum(TL_DATUM);
   saveStat(); // before the power goes
   delay(3000);
