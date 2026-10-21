@@ -229,7 +229,11 @@ void init_WifiManager()
   // Text box (Number) - 2 characters maximum
   char charZone[6];
   sprintf(charZone, "%d", Settings.Timezone);
+#ifdef AUTO_DST_EU
+  WiFiManagerParameter time_text_box_num("TimeZone", "TimeZone: winter UTC offset (France 1), summer time is automatic", charZone, 3);
+#else
   WiFiManagerParameter time_text_box_num("TimeZone", "TimeZone fromUTC (-12/+12)", charZone, 3);
+#endif
 
   WiFiManagerParameter features_html("<hr><br><label style=\"font-weight: bold;margin-bottom: 25px;display: inline-block;\">Features</label>");
 
@@ -291,8 +295,8 @@ void init_WifiManager()
             Serial.println("failed to connect and hit timeout");
             Settings.PoolAddress = pool_text_box.getValue();
             Settings.PoolPort = atoi(port_text_box_num.getValue());
-            strncpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword));
-            strncpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet));
+            strlcpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword)); // strncpy left no terminator on an 80-char entry
+            strlcpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet)); // strncpy left no terminator on an 80-char entry
             Settings.Timezone = atoi(time_text_box_num.getValue());
             //Serial.println(save_stats_to_nvs.getValue());
             Settings.saveStats = (strncmp(save_stats_to_nvs.getValue(), "T", 1) == 0);
@@ -325,8 +329,8 @@ void init_WifiManager()
                 // Save new config            
                 Settings.PoolAddress = pool_text_box.getValue();
                 Settings.PoolPort = atoi(port_text_box_num.getValue());
-                strncpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword));
-                strncpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet));
+                strlcpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword)); // strncpy left no terminator on an 80-char entry
+                strlcpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet)); // strncpy left no terminator on an 80-char entry
                 Settings.Timezone = atoi(time_text_box_num.getValue());
                 // Serial.println(save_stats_to_nvs.getValue());
                 Settings.saveStats = (strncmp(save_stats_to_nvs.getValue(), "T", 1) == 0);
@@ -367,12 +371,12 @@ void init_WifiManager()
         Serial.println(Settings.PoolPort);
 
         // Copy the string value
-        strncpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword));
+        strlcpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword)); // strncpy left no terminator on an 80-char entry
         Serial.print("poolPassword: ");
         Serial.println(Settings.PoolPassword);
 
         // Copy the string value
-        strncpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet));
+        strlcpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet)); // strncpy left no terminator on an 80-char entry
         Serial.print("btcString: ");
         Serial.println(Settings.BtcWallet);
 
@@ -416,12 +420,12 @@ void init_WifiManager()
     Serial.println(Settings.PoolPort);
 
     // Copy the string value
-    strncpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword));
+    strlcpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword)); // strncpy left no terminator on an 80-char entry
     Serial.print("poolPassword: ");
     Serial.println(Settings.PoolPassword);
 
     // Copy the string value
-    strncpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet));
+    strlcpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet)); // strncpy left no terminator on an 80-char entry
     Serial.print("btcString: ");
     Serial.println(Settings.BtcWallet);
 

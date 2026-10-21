@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include <esp_timer.h>
 #include "webConfig.h"
 #include "version.h"
 #include "wManager.h"
@@ -12,6 +13,10 @@
 #include "drivers/storage/storage.h"
 #include "currency.h"
 #include "cities.h"
+#include "webMonitorPage.h"
+#ifdef M5STICK_C_PLUS2
+#include "m5stickPlus2Hw.h"
+#endif
 
 extern TSettings Settings;
 
@@ -102,7 +107,11 @@ static void handleRoot()
   page += "<small>Mined with the same BTC address after " + String(POOL_FAILOVER_TRIES) +
           " failed attempts in a row on the pool above; back to that pool once it answers again (checked every " +
           String(POOL_FAILBACK_ms / 60000) + " minutes). Now mining on the " + (onBackupPool() ? "<b>backup</b>" : "main") + " pool.</small>";
+#ifdef AUTO_DST_EU
+  page += "<label>Timezone: UTC offset in WINTER (France/Belgium/Switzerland: 1). Summer time is added automatically.</label><input type='number' name='tz' value='" + String(Settings.Timezone) + "'>";
+#else
   page += "<label>Timezone (UTC offset, -12/+12)</label><input type='number' name='tz' value='" + String(Settings.Timezone) + "'>";
+#endif
   page += "<label>BTC price currency</label><select name='currency'>";
   for (int i = 0; i < kCurrencyCount; i++)
   {
@@ -123,8 +132,11 @@ static void handleRoot()
   page += "<label><input type='checkbox' name='flip' " + String(Settings.flipDisplay ? "checked" : "") + "> Flip display (rotate 180 degrees)</label>";
   page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
 #endif
+#if defined(M5STICK_C_PLUS2) && PLUS2_BACKLIGHT_PWM
+  page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
+#endif
 #ifdef HAS_BACKLIGHT_CONTROL
-  page += "<label>Screen off after (minutes without a touch, 0 = never)</label><input type='number' name='screenoff' min='0' max='1440' value='" + String(Settings.ScreenTimeout) + "'>";
+  page += "<label>Screen off after (minutes without a touch or button press, 0 = never)</label><input type='number' name='screenoff' min='0' max='1440' value='" + String(Settings.ScreenTimeout) + "'>";
   page += "<label><input type='checkbox' name='nightdim' " + String(Settings.nightDim ? "checked" : "") + "> Dim the screen at night</label>";
   page += "<small>Fades from the brightness above to the night brightness around sunset, and back at sunrise. " + nightDimStatus() + "</small>";
   page += "<label>Night brightness (1-255)</label><input type='number' name='nightbright' min='1' max='255' value='" + String(Settings.NightBrightness) + "'>";
@@ -180,7 +192,7 @@ static void handleRoot()
 #else
   page += F("<p><small>Settings apply straight away, no restart.</small></p>");
 #endif
-  page += F("</form><p><small>Miner status as JSON, no login needed: <a href='/api/status'>/api/status</a></small></p>");
+  page += F("</form><p><small><a href='/'>Live monitor</a> (no login needed) &middot; status as JSON: <a href='/api/status'>/api/status</a></small></p>");
 #ifdef HAS_BACKLIGHT_CONTROL
   page += F("<script>var f=document.forms[0],c=f.city,a=f.lat,o=f.lon;"
             "c.onchange=function(){if(c.value){var p=c.value.split(',');a.value=p[0];o.value=p[1]}};"
@@ -215,7 +227,7 @@ static void handleSave()
                         String("<!DOCTYPE html><html><head><meta charset='utf-8'>"
                                "<meta name='viewport' content='width=device-width, initial-scale=1'></head>"
                                "<body style='font-family:sans-serif'><p>") + problem +
-                            " Nothing was saved.</p><p><a href='/'>Back to settings</a></p></body></html>");
+                            " Nothing was saved.</p><p><a href='/settings'>Back to settings</a></p></body></html>");
       return;
     }
     next.WebPassword = webPass;
@@ -246,6 +258,10 @@ static void handleSave()
 #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ES3C35P) || defined(ESP32_4IN_ST7796)
   next.invertColors = webCfgServer.hasArg("invert");
   next.flipDisplay = webCfgServer.hasArg("flip");
+  if (webCfgServer.hasArg("brightness"))
+    next.Brightness = constrain(webCfgServer.arg("brightness").toInt(), 0, 255);
+#endif
+#if defined(M5STICK_C_PLUS2) && PLUS2_BACKLIGHT_PWM
   if (webCfgServer.hasArg("brightness"))
     next.Brightness = constrain(webCfgServer.arg("brightness").toInt(), 0, 255);
 #endif
@@ -335,7 +351,7 @@ static void handleSave()
                       "<meta name='viewport' content='width=device-width, initial-scale=1'>"
                       "<meta http-equiv='refresh' content='3;url=/'></head>"
                       "<body style='font-family:sans-serif'>" + msg +
-                      "<p><a href='/'>Back to settings</a></p></body></html>");
+                      "<p><a href='/settings'>Back to settings</a></p></body></html>");
     return;
   }
 
@@ -346,12 +362,13 @@ static void handleSave()
                      "<meta name='viewport' content='width=device-width, initial-scale=1'></head>"
                      "<body style='font-family:sans-serif'>"
                      "<p>Saved. Restarting device...</p>"
-                     "<p><a href='/'>Back to settings</a></p>"
-                     "<script>function p(){fetch('/',{cache:'no-store'})"
-                     ".then(function(r){if(r.ok||r.status==401)location.replace('/');else setTimeout(p,1500)})"
+                     "<p><a href='/settings'>Back to settings</a></p>"
+                     "<script>function p(){fetch('/settings',{cache:'no-store'})"
+                     ".then(function(r){if(r.ok||r.status==401)location.replace('/settings');else setTimeout(p,1500)})"
                      ".catch(function(){setTimeout(p,1500)})}setTimeout(p,4000);</script>"
                      "</body></html>");
 
+  saveStat(); // stats mined since the last periodic save
   delay(1000);
   ESP.restart();
 }
@@ -368,17 +385,18 @@ extern monitor_data mMonitor;
 static void handleStatus()
 {
   const MinerStatus m = getMinerStatus();
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(1536);
   doc["version"] = CURRENT_VERSION;
-  doc["uptime_s"] = (uint32_t)(millis() / 1000);
+  doc["uptime_s"] = (uint32_t)(esp_timer_get_time() / 1000000ULL); // 64-bit clock: millis() wraps after 49.7 days
   doc["state"] = mMonitor.NerdStatus == NM_hashing ? "mining" : mMonitor.NerdStatus == NM_Connecting ? "connecting" : "starting";
   doc["hashrate_khs"] = round(m.hashrateKHs * 10.0) / 10.0;
   doc["hashrate_avg_khs"] = round(m.avgHashrateKHs * 10.0) / 10.0; // since boot
   doc["total_mhashes"] = Mhashes + hashes / 1000000; // also kept across restarts when stats are saved
   doc["mining_time_s"] = (uint32_t)upTime;
   doc["templates"] = templates;
-  doc["best_diff"] = best_diff;
-  doc["shares_32bit"] = shares;
+  doc["best_diff"] = getBestDiff();
+  doc["shares_32bit"] = shares;                    // accepted by the pool
+  doc["shares_32bit_rejected"] = shares32Rejected; // refused by the pool
   doc["blocks_found"] = valids;
   doc["shares_accepted"] = m.accepted; // since boot
   doc["shares_rejected"] = m.rejected;
@@ -394,6 +412,33 @@ static void handleStatus()
   wifi["ip"] = WiFi.localIP().toString();
   doc["free_heap"] = ESP.getFreeHeap();
 
+  // Cached values only: nothing here may start an HTTPS fetch or an NTP
+  // request (those run on the monitor task and pause the miner).
+  JsonObject clock = doc.createNestedObject("clock");
+  int hh, mi, ss, dd, mo, yy;
+  if (getLocalClock(hh, mi, ss, dd, mo, yy)) {
+    char buf[16];
+    clock["synced"] = true;
+    snprintf(buf, sizeof(buf), "%02d:%02d:%02d", hh, mi, ss);
+    clock["time"] = buf;
+    snprintf(buf, sizeof(buf), "%02d/%02d/%04d", dd, mo, yy);
+    clock["date"] = buf;
+  } else {
+    clock["synced"] = false;
+  }
+  JsonObject btc = doc.createNestedObject("btc");
+  btc["price"] = getBTCpriceValue();                         // 0 = not fetched yet
+  btc["prefix"] = currencyFor(currencySetting()).prefix;
+  btc["block_height"] = getBlockHeightValue();               // 0 = not fetched yet
+#if defined(M5STICK_C_PLUS2) && defined(PIN_BATTERY_ADC)
+  const int batMv = plus2BatteryCachedMillivolts();
+  if (batMv > 0) {
+    JsonObject bat = doc.createNestedObject("battery");
+    bat["mv"] = batMv;
+    bat["percent"] = plus2BatteryPercent(batMv);
+  }
+#endif
+
   String out;
   serializeJson(doc, out);
   webCfgServer.sendHeader("Access-Control-Allow-Origin", "*");
@@ -401,14 +446,67 @@ static void handleStatus()
   webCfgServer.send(200, "application/json", out);
 }
 
+// --------------------------------------------------------------------------
+// Live monitor (webMonitorPage.h) and its hashrate history: one sample every
+// 30 s, the last hour, kept here in RAM (240 bytes).
+// --------------------------------------------------------------------------
+#define HISTORY_LEN 120
+#define HISTORY_PERIOD_ms 30000
+static uint16_t s_history[HISTORY_LEN]; // KH/s x 10
+static uint8_t s_historyCount = 0, s_historyHead = 0;
+static uint32_t s_historyLast = 0;
+
+static void historyTick()
+{
+  if (millis() - s_historyLast < HISTORY_PERIOD_ms)
+    return;
+  s_historyLast = millis();
+  uint32_t v = (uint32_t)(getMinerStatus().hashrateKHs * 10.0f + 0.5f);
+  if (v > 65535) v = 65535;
+  s_history[s_historyHead] = (uint16_t)v;
+  s_historyHead = (s_historyHead + 1) % HISTORY_LEN;
+  if (s_historyCount < HISTORY_LEN) s_historyCount++;
+}
+
+static void handleHistory()
+{
+  String out;
+  out.reserve(16 + s_historyCount * 7);
+  out = F("{\"interval_s\":");
+  out += HISTORY_PERIOD_ms / 1000;
+  out += F(",\"khs\":[");
+  for (uint8_t i = 0; i < s_historyCount; i++) {
+    const uint16_t v = s_history[(s_historyHead + HISTORY_LEN - s_historyCount + i) % HISTORY_LEN];
+    if (i) out += ',';
+    out += v / 10;
+    out += '.';
+    out += v % 10;
+  }
+  out += F("]}");
+  webCfgServer.sendHeader("Access-Control-Allow-Origin", "*");
+  webCfgServer.sendHeader("Cache-Control", "no-store");
+  webCfgServer.send(200, "application/json", out);
+}
+
+static void handleMonitor()
+{
+  webCfgServer.sendHeader("Cache-Control", "no-cache");
+  webCfgServer.send_P(200, "text/html; charset=utf-8", MONITOR_HTML);
+}
+
 void setup_webConfig(void)
 {
   if (webCfgStarted)
     return;
 
-  webCfgServer.on("/", HTTP_GET, handleRoot);
+  webCfgServer.on("/", HTTP_GET, handleMonitor);            // live monitor, no login
+  webCfgServer.on("/settings", HTTP_GET, handleRoot);        // settings, login
   webCfgServer.on("/save", HTTP_POST, handleSave);
   webCfgServer.on("/api/status", HTTP_GET, handleStatus);
+  webCfgServer.on("/api/history", HTTP_GET, handleHistory);
+  // Browsers ask for it on every visit; without this it fell to onNotFound,
+  // which redirected to "/" and sent the whole 11 KB page again.
+  webCfgServer.on("/favicon.ico", HTTP_GET, []() { webCfgServer.send(204); });
   webCfgServer.onNotFound([]()
   {
     webCfgServer.sendHeader("Location", "/");
@@ -417,12 +515,14 @@ void setup_webConfig(void)
   webCfgServer.begin();
   webCfgStarted = true;
 
-  Serial.print("[WEBCFG] Settings page available at http://");
-  Serial.println(WiFi.localIP());
+  Serial.print("[WEBCFG] Monitor at http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("/  (settings: /settings)");
 }
 
 void webConfigProcess(void)
 {
+  historyTick(); // also before the server is up, so the graph has the full hour
   if (webCfgStarted)
     webCfgServer.handleClient();
 }

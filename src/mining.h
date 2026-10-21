@@ -19,6 +19,16 @@
 // SHA active (e.g. the pool-stats HTTPS fetch) must hold it too.
 extern std::mutex g_hwShaMutex;
 
+// Bumped by the stratum task when the pool accepts a 32-bit share (difficulty
+// >= 1, the "32BITS SHARES" counter -- not every pool share, those come in
+// more than once a second) / when a valid block is found. Displays watch them to flash a LED or beep (M5StickC Plus2).
+extern volatile uint32_t g_shareFoundEvents;
+extern volatile uint32_t g_blockFoundEvents;
+
+// 32-bit shares (difficulty >= 1) the pool refused; the accepted ones are
+// the existing "shares" counter. Saved with the other stats.
+extern volatile uint32_t shares32Rejected;
+
 // ESP32-S3 overlapped HW loop only (PIPELINED_S3_MINING). On the S3 every
 // mbedTLS hash (the coinbase and merkle hashes of a new job, TLS handshakes)
 // goes through the one SHA engine, which that loop holds almost all the time:
@@ -31,6 +41,7 @@ extern std::mutex g_hwShaMutex;
 #if defined(PIPELINED_S3_MINING)
 #include <atomic>
 extern std::atomic<int> g_hwShaWanted;
+
 struct HwShaRequest
 {
   HwShaRequest() { g_hwShaWanted++; }
@@ -128,6 +139,9 @@ void minerWorkerHw(void * task_id);
 String printLocalTime(void);
 
 void resetStat();
+void updateBestDiff(double diff); // keep the best hash difficulty seen (any core)
+double getBestDiff();
+void saveStat();   // write the stats to NVS now (before a planned restart / power off)
 
 typedef struct{
   uint8_t bytearray_target[32];
