@@ -56,6 +56,10 @@ DisplayDriver *currentDisplayDriver = &t_qtDisplayDriver;
 DisplayDriver *currentDisplayDriver = &tDisplayV1Driver;
 #endif
 
+#ifdef TDISPLAY_PULSE
+DisplayDriver *currentDisplayDriver = &tDisplayPulseDriver;
+#endif
+
 #ifdef M5STICKC_DISPLAY
 DisplayDriver *currentDisplayDriver = &m5stickCDriver;
 #endif

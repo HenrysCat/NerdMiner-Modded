@@ -41,6 +41,7 @@ extern DisplayDriver es3c35pDriver;
 extern DisplayDriver esp32_4inDriver;
 extern DisplayDriver t_qtDisplayDriver;
 extern DisplayDriver tDisplayV1Driver;
+extern DisplayDriver tDisplayPulseDriver;
 extern DisplayDriver m5stickCDriver;
 extern DisplayDriver m5stickCPlusDriver;
 extern DisplayDriver t_hmiDisplayDriver;

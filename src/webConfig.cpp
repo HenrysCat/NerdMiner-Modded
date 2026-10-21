@@ -123,6 +123,10 @@ static void handleRoot()
   page += "<label><input type='checkbox' name='flip' " + String(Settings.flipDisplay ? "checked" : "") + "> Flip display (rotate 180 degrees)</label>";
   page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
 #endif
+#ifdef TDISPLAY_PULSE
+  page += "<label><input type='checkbox' name='flip' " + String(Settings.flipDisplay ? "checked" : "") + "> Flip display (USB on the left)</label>";
+  page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
+#endif
 #ifdef HAS_BACKLIGHT_CONTROL
   page += "<label>Screen off after (minutes without a touch, 0 = never)</label><input type='number' name='screenoff' min='0' max='1440' value='" + String(Settings.ScreenTimeout) + "'>";
   page += "<label><input type='checkbox' name='nightdim' " + String(Settings.nightDim ? "checked" : "") + "> Dim the screen at night</label>";
@@ -177,6 +181,8 @@ static void handleRoot()
   page += F("<input type='submit' value='Save'>");
 #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ES3C35P) || defined(ESP32_4IN_ST7796)
   page += F("<p><small>Settings apply straight away. Changing invert or flip restarts the device.</small></p>");
+#elif defined(TDISPLAY_PULSE)
+  page += F("<p><small>Settings apply straight away. Changing flip restarts the device.</small></p>");
 #else
   page += F("<p><small>Settings apply straight away, no restart.</small></p>");
 #endif
@@ -245,6 +251,11 @@ static void handleSave()
   next.saveStats = webCfgServer.hasArg("savestats");
 #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ES3C35P) || defined(ESP32_4IN_ST7796)
   next.invertColors = webCfgServer.hasArg("invert");
+  next.flipDisplay = webCfgServer.hasArg("flip");
+  if (webCfgServer.hasArg("brightness"))
+    next.Brightness = constrain(webCfgServer.arg("brightness").toInt(), 0, 255);
+#endif
+#ifdef TDISPLAY_PULSE
   next.flipDisplay = webCfgServer.hasArg("flip");
   if (webCfgServer.hasArg("brightness"))
     next.Brightness = constrain(webCfgServer.arg("brightness").toInt(), 0, 255);
@@ -409,6 +420,24 @@ void setup_webConfig(void)
   webCfgServer.on("/", HTTP_GET, handleRoot);
   webCfgServer.on("/save", HTTP_POST, handleSave);
   webCfgServer.on("/api/status", HTTP_GET, handleStatus);
+#ifdef TDISPLAY_UI_SCREENSHOT
+  // Dev builds: the screens rendered at boot (tDisplayPulseDriver.cpp),
+  // run-length encoded; tools/tdisplay_shots.py turns them into PNGs.
+  webCfgServer.on("/shot", HTTP_GET, []()
+  {
+    extern bool tDisplayShot(int i, const char **name, const uint8_t **data, size_t *len);
+    const char *name;
+    const uint8_t *data;
+    size_t len;
+    if (!tDisplayShot(webCfgServer.arg("i").toInt(), &name, &data, &len))
+    {
+      webCfgServer.send(404, "text/plain", "no such shot");
+      return;
+    }
+    webCfgServer.sendHeader("X-Shot-Name", name);
+    webCfgServer.send_P(200, "application/octet-stream", (PGM_P)data, len);
+  });
+#endif
   webCfgServer.onNotFound([]()
   {
     webCfgServer.sendHeader("Location", "/");

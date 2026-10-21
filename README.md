@@ -15,16 +15,17 @@ Original NerdMiner_v2 project https://github.com/BitMaker-hub/NerdMiner_v2
 
 ![NerdMiner Modded running on a CYD](images/nerdminer-mod.gif)
 
-> **⚠️ Tested on three boards only.** The changes in this fork have been developed and tested on the **ESP32-2432S028R (2.8" "Cheap Yellow Display", CYD)**, the **4.0" CYD with the 320x480 ST7796 panel** and a **screenless ESP32-WROOM-32 dev board**. Other boards still build from the same code base as the original, but they have **not** been tested with these changes. Expect rough edges, and please report what you find.
+> **⚠️ Tested on four boards only.** The changes in this fork have been developed and tested on the **ESP32-2432S028R (2.8" "Cheap Yellow Display", CYD)**, the **4.0" CYD with the 320x480 ST7796 panel**, the **LilyGO T-Display 1.14"** and a **screenless ESP32-WROOM-32 dev board**. Other boards still build from the same code base as the original, but they have **not** been tested with these changes. Expect rough edges, and please report what you find.
 
 - **High hashrate on the CYD** – the SHA-256 mining path for the classic ESP32 has been reworked to use the hardware SHA engine in a pipelined fashion, giving a sustained rate of roughly **990 KH/s** on the CYD (classic ESP32, both cores mining). Changes to the mining code are validated hash by hash against software, so the extra speed is not coming at the cost of invalid shares.
 - **New "Pulse" display theme** – the CYD UI has been completely redesigned. It is bitmap-free and has three screens: **MINE**, **MARKET** and **CLOCK**. Tap the wordmark to cycle the accent colour, and tap the top-right corner to toggle the backlight.
 - **4.0" CYD support** – the 4.0" 320x480 ST7796 variant of the CYD (ESP32-WROOM-32E, resistive touch) has its own build, `ESP32-4in-ST7796`: the same mining loop and the Pulse theme laid out for the larger 480x320 screen.
+- **Pulse on the LilyGO T-Display 1.14"** – the `TTGO-T-Display` build now uses the Pulse theme laid out for the 240x135 screen, with four screens: **MINE**, **MARKET**, **CLOCK** and **POOL** (workers, pool rate, pool best, uptime, pool and the settings page's IP address). It also frees enough memory for the BTC price, block height and network stats to load; with the old screens most of those requests failed on this board. Double-click the top button (USB on the right) to cycle the accent colour. Brightness, screen timeout, night dimming and display flip are set from the web settings page. See [T-Display 1.14" (Pulse)](#t-display-114-pulse) for the buttons.
 - **Headless build for a bare ESP32-WROOM-32** – a dev board without a screen has its own build, `ESP32-WROOM-Headless`: the same mining loop (measured at ~990 KH/s on a revision 3 chip), status on the serial port and the on-board LED. The LED can be switched off from the web settings page.
-- **Classic theme still available** – prefer the original look? Build the `ESP32-2432S028R-Classic` environment (`pio run -e ESP32-2432S028R-Classic -t upload`).
+- **Classic theme still available** – prefer the original look? Build the `ESP32-2432S028R-Classic` environment (`pio run -e ESP32-2432S028R-Classic -t upload`), or `TTGO-T-Display-Classic` on the T-Display 1.14".
 - **BTC price in your currency** – choose which fiat currency the BTC price is shown in from the web settings page.
 - **Improved web settings page** – the settings page stays reachable while mining, and now also has options for display flip (USB on the left), colour inversion, brightness and currency. Changes apply without a restart, including switching pool or wallet; only colour inversion and display flip restart the device. See [Web settings page](#web-settings-page) for how to log in. The page also takes a backup pool, a password of your own, and serves the miner's state as JSON at `/api/status`.
-- **Screen timeout and night dimming** – on the boards with a touch screen the backlight can switch off after a set number of minutes without a touch, and fade down to a night level around sunset (and back up at sunrise) for the city or coordinates you pick. Both are set from the web settings page.
+- **Screen timeout and night dimming** – on the boards with a touch screen, and on the T-Display 1.14", the backlight can switch off after a set number of minutes without a touch, and fade down to a night level around sunset (and back up at sunrise) for the city or coordinates you pick. Both are set from the web settings page.
 
 ### Why this hashrate is real
 
@@ -75,7 +76,7 @@ Every time an stratum job notification is received miner update its current work
 - LILYGO T-Display S3 ([Aliexpress link\*](https://s.click.aliexpress.com/e/_Ddy7739))
 - ESP32-WROOM-32, ESP32-Devkit1.. ([Aliexpress link\*](https://s.click.aliexpress.com/e/_DCzlUiX)) (fast mining loop: build environment `ESP32-WROOM-Headless`)
 - LILYGO T-QT pro ([Aliexpress link\*](https://s.click.aliexpress.com/e/_DBQIr43))
-- LILYGO T-Display 1.14 ([Aliexpress link\*](https://s.click.aliexpress.com/e/_DEqGvSJ))
+- LILYGO T-Display 1.14 ([Aliexpress link\*](https://s.click.aliexpress.com/e/_DEqGvSJ)) (Pulse theme: build environment `TTGO-T-Display`, original look: `TTGO-T-Display-Classic`)
 - LILYGO T-Display S3 AMOLED ([Aliexpress link\*](https://s.click.aliexpress.com/e/_DmOIK6j))
 - LILYGO T-Display S3 AMOLED Touch ([Board Info](https://www.lilygo.cc/products/t-display-s3-amoled?variant=43532279939253))
 - LILYGO T-Dongle S3 ([Aliexpress link\*](https://s.click.aliexpress.com/e/_DmQCPyj))
@@ -154,9 +155,9 @@ Note: when BTC address of your selected wallet is not provided, mining will not 
 
 #### Web settings page
 
-Once the miner is on your Wifi network it serves a settings page, also while it is mining, so you can change the pool, wallet, timezone, currency and display options without going back to the setup access point. On boards with a touch screen (CYD, 4" CYD, ES3C35P) it can also turn the screen off after a set number of minutes without a touch; any touch or press of the BOOT button wakes it again. On a board without a screen the page has a **Status LED** option instead of the display options, to switch the blinking LED off. On the CYD the RGB LED on the back can be switched off or set to any colour, see [LED on the back](#led-on-the-back-cyd).
+Once the miner is on your Wifi network it serves a settings page, also while it is mining, so you can change the pool, wallet, timezone, currency and display options without going back to the setup access point. On boards with a touch screen (CYD, 4" CYD, ES3C35P) and on the T-Display 1.14" it can also turn the screen off after a set number of minutes without a touch or button press; any touch or button press wakes it again. On a board without a screen the page has a **Status LED** option instead of the display options, to switch the blinking LED off. On the CYD the RGB LED on the back can be switched off or set to any colour, see [LED on the back](#led-on-the-back-cyd).
 
-1. Open `http://<miner IP address>/` in a browser on the same network. On the CYD the IP address is shown at the top of the screen; it is also printed on the serial log at start-up and listed by your router.
+1. Open `http://<miner IP address>/` in a browser on the same network. On the CYD the IP address is shown at the top of the screen, on the T-Display 1.14" on its POOL screen; it is also printed on the serial log at start-up and listed by your router.
 1. Log in when the browser asks:
    - User: admin
    - Password: MineYourCoins, until you set your own at the bottom of the page (type it twice). If you forget it, a long press of the BOOT button erases the whole configuration (WiFi, pool, all settings and the saved statistics) and with it the password; set the miner up again through its setup access point.
@@ -184,7 +185,7 @@ Fill in **Backup pool URL**, port and (optionally) password to have the miner ca
 
 ##### Night dimming
 
-On the boards with a touch screen the settings page can also fade the backlight down after dark. Tick **Dim the screen at night**, set a night brightness and a fade length in minutes, and pick the nearest city from the list. A city a few hundred kilometres away is still good to a few minutes; for an exact location choose **Custom** and enter your latitude and longitude in decimal degrees (south and west are negative, e.g. London is 51.51 and -0.13). The backlight then moves between the normal brightness and the night level across a window centred on each crossing: the default 60 minute fade starts 30 minutes before sunset and finishes 30 minutes after, then reverses at sunrise.
+On the boards with a touch screen, and on the T-Display 1.14", the settings page can also fade the backlight down after dark. Tick **Dim the screen at night**, set a night brightness and a fade length in minutes, and pick the nearest city from the list. A city a few hundred kilometres away is still good to a few minutes; for an exact location choose **Custom** and enter your latitude and longitude in decimal degrees (south and west are negative, e.g. London is 51.51 and -0.13). The backlight then moves between the normal brightness and the night level across a window centred on each crossing: the default 60 minute fade starts 30 minutes before sunset and finishes 30 minutes after, then reverses at sunrise.
 
 The page prints the current sun state and today's sunrise and sunset next to the controls, in the timezone set on the page, so you can check the location is right. Until the clock has been set from the network, or with no location entered, the normal brightness is used.
 
@@ -264,6 +265,14 @@ With the USB-C port to the right:
 
 - One Click > turn the screen off and on again
 - Double click > change orientation (default is USB-C to the right)
+
+#### T-Display 1.14" (Pulse)
+
+The same two buttons, plus:
+
+- **TOP BUTTON** double click > next accent colour (five to choose from; kept across restarts, like the last screen shown).
+- The orientation set by the bottom button's double click is kept across restarts too, and is the same setting as **Flip display** on the web settings page.
+- While the screen is off (bottom button, or the screen timeout from the settings page), the first press of either button only turns it back on.
 
 ### Project guidelines
 

@@ -22,7 +22,7 @@ void doLedStuff(unsigned long frame);
 //    or button press (0 = never).
 //  - Night dimming: fades between Settings.Brightness and
 //    Settings.NightBrightness around sunset and sunrise at the set location.
-#if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ES3C35P) || defined(ESP32_4IN_ST7796)
+#if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB) || defined(ES3C35P) || defined(ESP32_4IN_ST7796) || defined(TDISPLAY_PULSE)
 #define HAS_BACKLIGHT_CONTROL
 #include <Arduino.h>
 void noteScreenActivity();         // a touch or button press: restart the countdown

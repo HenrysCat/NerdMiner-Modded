@@ -125,6 +125,11 @@ void setup()
     button2.attachLongPressStart(reset_configuration);
   #endif
 
+  #ifdef TDISPLAY_PULSE
+    extern void tDisplayPulseNextAccent(void);
+    button2.attachDoubleClick(tDisplayPulseNextAccent); // next accent colour
+  #endif
+
   /******** INIT NERDMINER ************/
   Serial.println("NerdMiner v2 starting......");
 
