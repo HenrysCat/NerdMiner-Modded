@@ -20,8 +20,8 @@ typedef struct {
     String extranonce1;
     String extranonce2;
     int extranonce2_size;
-    char wName[80];
-    char wPass[20];
+    char wName[80];  // same size as Settings.BtcWallet
+    char wPass[80];  // same size as Settings.PoolPassword (20 overflowed with a long password)
 } mining_subscribe;
 
 typedef struct {

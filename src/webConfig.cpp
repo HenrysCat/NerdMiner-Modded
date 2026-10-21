@@ -242,7 +242,7 @@ static void handleSave()
   if (webCfgServer.hasArg("pool"))
     next.PoolAddress = webCfgServer.arg("pool");
   if (webCfgServer.hasArg("port"))
-    next.PoolPort = webCfgServer.arg("port").toInt();
+    next.PoolPort = constrain(webCfgServer.arg("port").toInt(), 0, 65535); // like bport
   if (webCfgServer.hasArg("poolpass"))
     strncpy(next.PoolPassword, webCfgServer.arg("poolpass").c_str(), sizeof(next.PoolPassword) - 1);
   if (webCfgServer.hasArg("wallet"))
@@ -257,7 +257,7 @@ static void handleSave()
   if (webCfgServer.hasArg("bpoolpass"))
     strlcpy(next.BackupPoolPassword, webCfgServer.arg("bpoolpass").c_str(), sizeof(next.BackupPoolPassword));
   if (webCfgServer.hasArg("tz"))
-    next.Timezone = webCfgServer.arg("tz").toInt();
+    next.Timezone = constrain(webCfgServer.arg("tz").toInt(), -12, 14);
   if (webCfgServer.hasArg("currency"))
     next.Currency = currencyFor(webCfgServer.arg("currency")).code;
   next.saveStats = webCfgServer.hasArg("savestats");
@@ -412,8 +412,13 @@ static void handleStatus()
   doc["shares_accepted"] = m.accepted; // since boot
   doc["shares_rejected"] = m.rejected;
   JsonObject pool = doc.createNestedObject("pool");
-  pool["address"] = activePoolAddress();
-  pool["port"] = activePoolPort();
+  {
+    // The stratum task swaps a new pool into Settings under this mutex
+    // (takePoolChange); this runs on the other core, so copy it under it too.
+    std::lock_guard<std::mutex> lock(g_settingsMutex);
+    pool["address"] = activePoolAddress();
+    pool["port"] = activePoolPort();
+  }
   pool["backup"] = onBackupPool();
   pool["subscribed"] = m.subscribed;
   pool["difficulty"] = m.poolDifficulty;

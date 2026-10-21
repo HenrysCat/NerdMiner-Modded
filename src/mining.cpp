@@ -361,9 +361,7 @@ bool checkPoolInactivity(unsigned int keepAliveTime, unsigned long inactivityTim
 
     // If no shares sent to pool
     // send something to pool to hold socket oppened
-    if (time_now < mLastTXtoPool) //32bit wrap
-      mLastTXtoPool = time_now;
-    if ( time_now > mLastTXtoPool + keepAliveTime)
+    if (time_now - mLastTXtoPool > keepAliveTime) // wrap-safe
     {
       mLastTXtoPool = time_now;
       Serial.println("  Sending  : KeepAlive suggest_difficulty");
@@ -597,8 +595,8 @@ void runStratumWorker(void *name) {
         continue;
       }
 
-      strcpy(mWorker.wName, Settings.BtcWallet);
-      strcpy(mWorker.wPass, activePoolPassword());
+      strlcpy(mWorker.wName, Settings.BtcWallet, sizeof(mWorker.wName));
+      strlcpy(mWorker.wPass, activePoolPassword(), sizeof(mWorker.wPass));
       // STEP 2: Pool authorize work (Block Info)
       tx_mining_auth(client, mWorker.wName, mWorker.wPass); //Don't verifies authoritzation, TODO
       //tx_mining_auth2(client, mWorker.wName, mWorker.wPass); //Don't verifies authoritzation, TODO
@@ -625,9 +623,7 @@ void runStratumWorker(void *name) {
 
     {
       uint32_t time_now = millis();
-      if (time_now < last_job_time) //32bit wrap
-        last_job_time = time_now;
-      if (time_now >= last_job_time + 10*60*1000)  //10minutes without job
+      if (time_now - last_job_time >= 10*60*1000)  //10minutes without job (wrap-safe)
       {
         client.stop();
         isMinerSuscribed=false;
@@ -2305,10 +2301,10 @@ void runMonitor(void *name)
 
   while (1)
   {
+    // No clamp on millis() going "back": it wraps after 49.7 days, and clamping
+    // it to the last value froze this block (screen, stats, settings) for the
+    // next 49.7 days. Unsigned subtraction already handles the wrap.
     uint32_t now_millis = millis();
-    if (now_millis < last_update_millis)
-      now_millis = last_update_millis;
-    
     uint32_t mElapsed = now_millis - mLastCheck;
     if (mElapsed >= 1000)
     { 
