@@ -251,7 +251,10 @@ void init_WifiManager()
   }
   WiFiManagerParameter save_stats_to_nvs("SaveStatsToNVS", "Save mining statistics to flash memory.", "T", 2, checkboxParams, WFM_LABEL_AFTER);
   // Text box (String) - 80 characters maximum
-  WiFiManagerParameter password_text_box("Poolpassword - Optional", "Pool password", Settings.PoolPassword, 80);
+  // WiFiManager refuses an ID with anything but letters, digits and '_' ("parameter IDs
+  // can only contain alpha numeric chars"): with "Poolpassword - Optional" the
+  // field was never added, and the setup portal had no pool password.
+  WiFiManagerParameter password_text_box("Poolpassword", "Pool password (optional)", Settings.PoolPassword, 80);
 
   // Add all defined parameters
   wm.addParameter(&pool_text_box);
