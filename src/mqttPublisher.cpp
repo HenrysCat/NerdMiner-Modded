@@ -46,6 +46,14 @@ static void stopClient()
 {
   if (!s_client)
     return;
+  if (s_connected)
+  {
+    // A clean disconnect doesn't trigger the last will: say "offline" before
+    // going, or Home Assistant keeps showing the miner as available (with its
+    // last values) after MQTT is switched off or moved to another broker.
+    esp_mqtt_client_publish(s_client, s_availTopic.c_str(), "offline", 0, 1, 1);
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
   esp_mqtt_client_stop(s_client);
   esp_mqtt_client_destroy(s_client);
   s_client = nullptr;
