@@ -115,8 +115,11 @@ bool SDCard::loadConfigFile(TSettings* Settings)
                         Settings->WifiPW = json[JSON_KEY_PASW] | Settings->WifiPW;
                     }
                     Settings->PoolAddress = json[JSON_KEY_POOLURL] | Settings->PoolAddress;
-                    strcpy(Settings->PoolPassword, json[JSON_KEY_POOLPASS] | Settings->PoolPassword);
-                    strcpy(Settings->BtcWallet, json[JSON_KEY_WALLETID] | Settings->BtcWallet);
+                    // bounded, and not copied onto itself when the key is missing
+                    if (const char *v = json[JSON_KEY_POOLPASS])
+                        strlcpy(Settings->PoolPassword, v, sizeof(Settings->PoolPassword));
+                    if (const char *v = json[JSON_KEY_WALLETID])
+                        strlcpy(Settings->BtcWallet, v, sizeof(Settings->BtcWallet));
                     if (json.containsKey(JSON_KEY_POOLPORT))
                         Settings->PoolPort = json[JSON_KEY_POOLPORT].as<int>();
                     if (json.containsKey(JSON_KEY_TIMEZONE))

@@ -251,20 +251,38 @@ miner_data calculateMiningData(mining_subscribe& mWorker, mining_job mJob){
     }
 
     //get coinbase - coinbase_hash_bin = hashlib.sha256(hashlib.sha256(binascii.unhexlify(coinbase)).digest()).digest()
-    // Use char buffer instead of String concatenation to avoid memory leaks
-    static char coinbase_buffer[512]; // Static buffer to avoid repeated allocation
-    snprintf(coinbase_buffer, sizeof(coinbase_buffer), "%s%s%s%s", 
-             mJob.coinb1.c_str(), mWorker.extranonce1.c_str(), 
+    // Static buffer for the usual sizes; a bigger coinbase (pools with several
+    // payout outputs) gets a heap one. The fixed 512 digits used to cut it
+    // silently: wrong merkle root, every share rejected.
+    static char coinbase_static[512];
+    const size_t coinbase_hex = mJob.coinb1.length() + mWorker.extranonce1.length() +
+                                mWorker.extranonce2.length() + mJob.coinb2.length();
+    char *coinbase_heap = nullptr;
+    char *coinbase_buffer = coinbase_static;
+    size_t coinbase_size = sizeof(coinbase_static);
+    if (coinbase_hex + 1 > sizeof(coinbase_static))
+    {
+        coinbase_heap = (char *)malloc(coinbase_hex + 1);
+        if (coinbase_heap)
+        {
+            coinbase_buffer = coinbase_heap;
+            coinbase_size = coinbase_hex + 1;
+        } else
+            Serial.printf("    coinbase: %u hex digits, out of memory\n", (unsigned)coinbase_hex);
+    }
+    snprintf(coinbase_buffer, coinbase_size, "%s%s%s%s",
+             mJob.coinb1.c_str(), mWorker.extranonce1.c_str(),
              mWorker.extranonce2.c_str(), mJob.coinb2.c_str());
     Serial.print("    coinbase: "); Serial.println(coinbase_buffer);
     size_t str_len = strlen(coinbase_buffer)/2;
-    uint8_t bytearray[str_len];
+    // Decoded in place (each byte is written behind the two digits it comes
+    // from): no second buffer on the stratum task's stack.
+    uint8_t *bytearray = (uint8_t *)coinbase_buffer;
 
     size_t res = to_byte_array(coinbase_buffer, str_len*2, bytearray);
 
     #ifdef DEBUG_MINING
     Serial.print("    extranonce2: "); Serial.println(mWorker.extranonce2);
-    Serial.print("    coinbase: "); Serial.println(coinbase_buffer);
     Serial.print("    coinbase bytes - size: "); Serial.println(res);
     for (size_t i = 0; i < res; i++)
         Serial.printf("%02x", bytearray[i]);
@@ -285,6 +303,7 @@ miner_data calculateMiningData(mining_subscribe& mWorker, mining_job mJob){
     mbedtls_sha256_update_ret(&ctx, interResult, 32);
     mbedtls_sha256_finish_ret(&ctx, shaResult);
     mbedtls_sha256_free(&ctx);
+    free(coinbase_heap);
 
     #ifdef DEBUG_MINING
     Serial.print("    coinbase double sha: ");

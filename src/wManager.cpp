@@ -214,8 +214,8 @@ void init_WifiManager()
     WiFiManagerParameter pool_text_box("Poolurl", "Pool url", Settings.PoolAddress.c_str(), 80);
 
     // Need to convert numerical input to string to display the default value.
-    char convertedValue[6];
-    sprintf(convertedValue, "%d", Settings.PoolPort);
+    char convertedValue[12]; // fits any int: a port typed as 1234567 overflowed [6]
+    snprintf(convertedValue, sizeof(convertedValue), "%d", Settings.PoolPort);
 
     // Text box (Number) - 7 characters maximum
     WiFiManagerParameter port_text_box_num("Poolport", "Pool port", convertedValue, 7);
@@ -227,8 +227,8 @@ void init_WifiManager()
     WiFiManagerParameter addr_text_box("btcAddress", "Your BTC address", Settings.BtcWallet, 80);
 
   // Text box (Number) - 2 characters maximum
-  char charZone[6];
-  sprintf(charZone, "%d", Settings.Timezone);
+  char charZone[12];
+  snprintf(charZone, sizeof(charZone), "%d", Settings.Timezone);
 #ifdef AUTO_DST_EU
   WiFiManagerParameter time_text_box_num("TimeZone", "TimeZone: winter UTC offset (France 1), summer time is automatic", charZone, 3);
 #else

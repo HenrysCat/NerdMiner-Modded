@@ -191,7 +191,11 @@ bool parse_mining_notify(String line, mining_job& mJob)
    
     DeserializationError error = deserializeJson(doc, line);
 
-    if (error) return false;
+    if (error) {
+      // NoMemory: the job is bigger than BUFFER_JSON_DOC (huge coinbase)
+      Serial.printf("    mining.notify not parsed (%u bytes): %s\n", line.length(), error.c_str());
+      return false;
+    }
     if (!doc.containsKey("params")) return false;
 
     mJob.job_id = String((const char*) doc["params"][0]);
