@@ -7,10 +7,11 @@
 // nerd_sha256d_baked(): true exactly when that function would return true.
 // Xtensa LX6/LX7, windowed ABI, IRAM. 5294 instructions on the only path.
 
-// Used by minerWorkerSw() on the classic ESP32 only: the only target it was
-// run on (Espressif QEMU, against the C version and hashlib).
+// Used by minerWorkerSw() on the classic ESP32 (LX6) and the ESP32-S3 (LX7):
+// the targets it was run on (Espressif QEMU, against the C version and
+// hashlib). Same condition as NERD_SW_ASM in src/ShaTests/nerdSHA256plus.h.
 #include "sdkconfig.h"
-#if defined(CONFIG_IDF_TARGET_ESP32)
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
     .section .iram1.sw_sha256d, "ax"
     .literal_position
     .literal .Lsw_k0, 0x11002000

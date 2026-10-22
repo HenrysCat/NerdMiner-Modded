@@ -401,10 +401,11 @@ def build():
         "// Xtensa LX6/LX7, windowed ABI, IRAM. %d instructions on the only path." % sum(
             1 for l in g.code if l.startswith("    ")),
         "",
-        "// Used by minerWorkerSw() on the classic ESP32 only: the only target it was",
-        "// run on (Espressif QEMU, against the C version and hashlib).",
+        "// Used by minerWorkerSw() on the classic ESP32 (LX6) and the ESP32-S3 (LX7):",
+        "// the targets it was run on (Espressif QEMU, against the C version and",
+        "// hashlib). Same condition as NERD_SW_ASM in src/ShaTests/nerdSHA256plus.h.",
         "#include \"sdkconfig.h\"",
-        "#if defined(CONFIG_IDF_TARGET_ESP32)",
+        "#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)",
         "    .section .iram1.sw_sha256d, \"ax\"",
         "    .literal_position",
     ]
