@@ -162,4 +162,12 @@ String currencySetting(void);
 void poolSettingsChanged(void);
 void applyPendingSettings(void);
 
+// Live web monitor (webConfig.cpp): the page was loaded / polled /api/status.
+// webMonitorDataTick() (monitor task, once a second) then fetches the BTC price
+// and block height once when the page opens and once an hour while it stays
+// open; nothing while nobody is watching.
+void noteWebMonitorOpened(void);
+void noteWebMonitorPoll(void);
+void webMonitorDataTick(void);
+
 #endif //MONITOR_API_H

@@ -502,6 +502,7 @@ void fillMinerStatusJson(JsonDocument &doc)
 
 static void handleStatus()
 {
+  noteWebMonitorPoll(); // the live monitor (or a script) is watching
   DynamicJsonDocument doc(1536);
   fillMinerStatusJson(doc);
   String out;
@@ -555,6 +556,7 @@ static void handleHistory()
 
 static void handleMonitor()
 {
+  noteWebMonitorOpened(); // fetch the BTC price / block height if the screens never did
   webCfgServer.sendHeader("Cache-Control", "no-cache");
   webCfgServer.send_P(200, "text/html; charset=utf-8", MONITOR_HTML);
 }

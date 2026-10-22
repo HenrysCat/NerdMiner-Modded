@@ -156,7 +156,7 @@ Note: when BTC address of your selected wallet is not provided, mining will not 
 
 #### Live web monitor
 
-`http://<miner IP address>/` shows the miner live in any browser on the same network, phone or computer, no login needed: hashrate with a graph of the last hour, 32-bit shares, best difficulty, pool shares, mining time, BTC price and block height, clock, WiFi signal, pool, and on the M5StickC Plus2 the battery. It refreshes by itself every 3 s, follows the light/dark theme of the device and needs no internet access (everything is served by the miner). Like `/api/status` it shows nothing secret (no wallet address, no password). The graph's history is also available as JSON at `/api/history` (one value every 30 s, KH/s).
+`http://<miner IP address>/` shows the miner live in any browser on the same network, phone or computer, no login needed: hashrate with a graph of the last hour, 32-bit shares, best difficulty, pool shares, mining time, BTC price and block height, clock, WiFi signal, pool, and on the M5StickC Plus2 the battery. It refreshes by itself every 3 s, follows the light/dark theme of the device and needs no internet access (everything is served by the miner). The BTC price and block height are fetched by the miner when the page is opened (unless a screen just did) and then once an hour while it stays open: each fetch pauses the hardware miner for about a second, so it doesn't follow the 3 s refresh. Like `/api/status` it shows nothing secret (no wallet address, no password). The graph's history is also available as JSON at `/api/history` (one value every 30 s, KH/s).
 
 #### Web settings page
 

@@ -2403,6 +2403,7 @@ void runMonitor(void *name)
       }
 
       applyPendingSettings(); // from the LAN settings page
+      webMonitorDataTick();   // price / block height for the live web monitor
       backlightTick();
       drawCurrentScreen(mElapsed);
 

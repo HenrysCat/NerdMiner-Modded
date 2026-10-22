@@ -1001,3 +1001,45 @@ void applyPendingSettings(void) {
         mPoolUpdate = 0;
     }
 }
+
+// ---------------------------------------------------------------------------
+// BTC price and block height for the live web monitor. It shows the cached
+// values only (it never starts a fetch itself), and the screens fetch them
+// only on the pages that show them: a board left on its miner page never had
+// any. Each HTTPS fetch pauses the HW miner (~1.5 s), so the web page asks
+// for them sparingly: once when it is opened, then once an hour while it
+// stays open. getBTCprice() / getBlockHeight() still skip the request if a
+// screen fetched within their usual period. Monitor task only.
+// ---------------------------------------------------------------------------
+#define WEB_PRICE_REFRESH_ms (60UL * 60 * 1000) // while the page stays open
+#define WEB_WATCHED_ms (60UL * 1000)            // no poll for this long: closed
+
+static std::atomic<bool> s_webOpened{false};
+static std::atomic<uint32_t> s_webSeenMs{0};
+
+void noteWebMonitorOpened(void)
+{
+    s_webSeenMs = millis();
+    s_webOpened = true;
+}
+
+void noteWebMonitorPoll(void)
+{
+    s_webSeenMs = millis();
+}
+
+void webMonitorDataTick(void)
+{
+    static uint32_t lastWebFetch = 0;
+    const uint32_t now = millis();
+    bool due = s_webOpened.exchange(false);
+    if (!due) {
+        const uint32_t seen = s_webSeenMs;
+        due = seen != 0 && now - seen < WEB_WATCHED_ms && now - lastWebFetch >= WEB_PRICE_REFRESH_ms;
+    }
+    if (!due)
+        return;
+    lastWebFetch = now;
+    getBTCprice();
+    getBlockHeight();
+}
