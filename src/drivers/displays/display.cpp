@@ -226,6 +226,14 @@ void switchToNextScreen()
 // Draw the current cyclic screen
 void drawCurrentScreen(unsigned long mElapsed)
 {
+#if defined(M5STICK_C_PLUS2) && PLUS2_BACKLIGHT_PWM
+  // Screen switched off: nothing to see, so skip the redraw (~1/s of core-0
+  // time the software miner gets back) and, on the info screens, the HTTPS
+  // fetches that would pause the hardware miner. The next draw after the
+  // screen comes back on is at most a second away.
+  if (ledcRead(0) == 0)
+    return;
+#endif
   currentDisplayDriver->cyclic_screens[currentDisplayDriver->current_cyclic_screen](mElapsed);
 }
 

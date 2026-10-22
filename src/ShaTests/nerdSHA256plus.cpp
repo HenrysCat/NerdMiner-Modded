@@ -106,7 +106,7 @@ void ByteReverseWords(uint32_t* out, const uint32_t* in, uint32_t byteCount)
 }
 
 
-IRAM_ATTR void nerd_mids(uint32_t* digest, const uint8_t* dataIn)
+NERD_MIDS_ATTR void nerd_mids(uint32_t* digest, const uint8_t* dataIn)
 {
     uint32_t A[8] = { 0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19 };
 
