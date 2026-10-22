@@ -1,0 +1,11 @@
+# M5StickC Plus2 (8 MB flash): huge_app.csv plus a second app slot in the
+# upper 4 MB, for firmware updates from the web settings page. nvs, app0,
+# spiffs and coredump stay where huge_app.csv has them, so moving to this
+# table (one USB flash) keeps the Wi-Fi, pool settings and mining stats.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x300000,
+spiffs,   data, spiffs,  0x310000,0xE0000,
+coredump, data, coredump,0x3F0000,0x10000,
+app1,     app,  ota_1,   0x400000,0x300000,

@@ -14,6 +14,8 @@
 #include "currency.h"
 #include "cities.h"
 #include "webMonitorPage.h"
+#include <Update.h>
+#include <esp_ota_ops.h>
 #ifdef M5STICK_C_PLUS2
 #include "m5stickPlus2Hw.h"
 #endif
@@ -29,6 +31,15 @@ static const char *WEBCFG_USER = "admin";
 
 static WebServer webCfgServer(80);
 static bool webCfgStarted = false;
+
+// Firmware update from the settings page: POST /update with the board's
+// <env>_firmware.bin (the app alone). Needs a second app slot (ota_1) in the
+// partition table; with a one-app table such as huge_app.csv the page says
+// it is not available (flash a two-slot table once over USB, see README).
+static bool otaAvailable()
+{
+  return esp_ota_get_next_update_partition(NULL) != NULL;
+}
 
 static bool checkAuth()
 {
@@ -198,7 +209,29 @@ static void handleRoot()
 #else
   page += F("<p><small>Settings apply straight away, no restart.</small></p>");
 #endif
-  page += F("</form><p><small><a href='/'>Live monitor</a> (no login needed) &middot; status as JSON: <a href='/api/status'>/api/status</a></small></p>");
+  page += F("</form>");
+  page += F("<h3>Firmware update</h3>");
+  page += "<p><small>Running " CURRENT_VERSION ", partition ";
+  page += esp_ota_get_running_partition()->label;
+  page += F(".</small></p>");
+  if (otaAvailable())
+  {
+    page += F("<form id='ota' method='POST' action='/update' enctype='multipart/form-data'>"
+              "<label>Firmware file: the board's <b>_firmware.bin</b> (not _factory.bin)</label>"
+              "<input type='file' name='fw' accept='.bin' required>"
+              "<input type='submit' value='Upload and restart'>"
+              "<div id='otap' style='margin-top:.6em'></div></form>"
+              "<script>(function(){var f=document.getElementById('ota'),p=document.getElementById('otap');"
+              "f.onsubmit=function(e){e.preventDefault();var x=new XMLHttpRequest();x.open('POST','/update');"
+              "x.upload.onprogress=function(v){if(v.lengthComputable)p.textContent='Uploading... '+Math.round(v.loaded*100/v.total)+' %'};"
+              "x.onload=function(){document.open();document.write(x.responseText);document.close()};"
+              "x.onerror=function(){p.textContent='Upload failed: connection lost.'};"
+              "f.querySelector('[type=submit]').disabled=true;x.send(new FormData(f))}})();</script>");
+  }
+  else
+    page += F("<p><small>Not available with this partition table (a single app slot). "
+              "Flash once over USB with a table that has two, see the README.</small></p>");
+  page += F("<p><small><a href='/'>Live monitor</a> (no login needed) &middot; status as JSON: <a href='/api/status'>/api/status</a></small></p>");
 #ifdef HAS_BACKLIGHT_CONTROL
   page += F("<script>var f=document.forms[0],c=f.city,a=f.lat,o=f.lon;"
             "c.onchange=function(){if(c.value){var p=c.value.split(',');a.value=p[0];o.value=p[1]}};"
@@ -484,6 +517,96 @@ static void historyTick()
   if (s_historyCount < HISTORY_LEN) s_historyCount++;
 }
 
+// Upload side of POST /update, called for each received block. The login is
+// checked on the first block (the final handler asks for it again); the
+// first block must be an app image: 0xE9 magic and the app descriptor magic
+// at offset 32, so a _factory.bin or a bootloader is refused before anything
+// is written.
+static bool s_otaAuthed = false;
+static String s_otaError;
+
+static void handleUpdateUpload()
+{
+  HTTPUpload &up = webCfgServer.upload();
+  switch (up.status)
+  {
+  case UPLOAD_FILE_START:
+    s_otaError = "";
+    s_otaAuthed = webCfgServer.authenticate(WEBCFG_USER, Settings.WebPassword.c_str());
+    if (!s_otaAuthed)
+      return;
+    if (!otaAvailable())
+    {
+      s_otaError = "no second app slot in the partition table";
+      return;
+    }
+    Serial.printf("[OTA] receiving %s\n", up.filename.c_str());
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH))
+      s_otaError = Update.errorString();
+    break;
+  case UPLOAD_FILE_WRITE:
+    if (!s_otaAuthed || s_otaError.length())
+      return;
+    if (up.totalSize == 0)
+    {
+      const uint32_t descMagic = up.currentSize >= 36 ? (uint32_t)up.buf[32] | (uint32_t)up.buf[33] << 8 |
+                                                            (uint32_t)up.buf[34] << 16 | (uint32_t)up.buf[35] << 24
+                                                      : 0;
+      if (up.buf[0] != 0xE9 || descMagic != 0xABCD5432)
+      {
+        s_otaError = "not an app image: use the _firmware.bin file, not _factory.bin";
+        Update.abort();
+        return;
+      }
+    }
+    if (Update.write(up.buf, up.currentSize) != up.currentSize)
+      s_otaError = Update.errorString();
+    break;
+  case UPLOAD_FILE_END:
+    if (!s_otaAuthed || s_otaError.length())
+      return;
+    if (!Update.end(true)) // checks the image; switches the boot slot only if it is valid
+      s_otaError = Update.errorString();
+    else
+      Serial.printf("[OTA] %u bytes written, restarting\n", (unsigned)up.totalSize);
+    break;
+  default: // aborted
+    Update.abort();
+    s_otaError = "upload interrupted";
+    break;
+  }
+}
+
+static void handleUpdateDone()
+{
+  if (!checkAuth())
+    return;
+  if (!s_otaAuthed || s_otaError.length() || !Update.isFinished())
+  {
+    webCfgServer.send(500, "text/html",
+                      String("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                             "<meta name='viewport' content='width=device-width, initial-scale=1'></head>"
+                             "<body style='font-family:sans-serif'><p>Update failed: ") +
+                          (s_otaError.length() ? s_otaError : String("no file received")) +
+                          ". The current firmware is still the one that runs.</p>"
+                          "<p><a href='/settings'>Back to settings</a></p></body></html>");
+    return;
+  }
+  webCfgServer.send(200, "text/html",
+                    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                    "<meta name='viewport' content='width=device-width, initial-scale=1'></head>"
+                    "<body style='font-family:sans-serif'>"
+                    "<p>Update written. Restarting on the new firmware...</p>"
+                    "<p><a href='/settings'>Back to settings</a></p>"
+                    "<script>function p(){fetch('/settings',{cache:'no-store'})"
+                    ".then(function(r){if(r.ok||r.status==401)location.replace('/settings');else setTimeout(p,1500)})"
+                    ".catch(function(){setTimeout(p,1500)})}setTimeout(p,6000);</script>"
+                    "</body></html>");
+  saveStat(); // stats mined since the last periodic save
+  delay(1000);
+  ESP.restart();
+}
+
 static void handleHistory()
 {
   String out;
@@ -518,6 +641,7 @@ void setup_webConfig(void)
   webCfgServer.on("/", HTTP_GET, handleMonitor);            // live monitor, no login
   webCfgServer.on("/settings", HTTP_GET, handleRoot);        // settings, login
   webCfgServer.on("/save", HTTP_POST, handleSave);
+  webCfgServer.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload); // firmware update, login
   webCfgServer.on("/api/status", HTTP_GET, handleStatus);
 #ifdef TDISPLAY_UI_SCREENSHOT
   // Dev builds: the screens rendered at boot (tDisplayPulseDriver.cpp),
