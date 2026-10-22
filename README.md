@@ -299,6 +299,17 @@ Build environment: `M5Stick-C-Plus2` (`pio run -e M5Stick-C-Plus2 -t upload`).
 - **Power-cut-proof stats**: two save slots used in turn, each save one record with its own CRC. A power cut in the middle of a save only damages the slot being written; the miner restarts from the other one (the stock format reset every counter to zero in that case). Stats saved by the stock firmware are taken over automatically.
 - **Flat battery protection**: on battery, below 3.40 V for 30 s, a "Low battery" message then power off (no brown-out reboot loop). On USB nothing happens. `-D PLUS2_LOW_BATTERY_OFF=0` turns it off.
 
+### Unit tests (no board needed)
+
+`pio test -e native` builds the stratum parsing, the block header code (`calculateMiningData`), the share checks (`checkValid`, `diff_from_target`) and the software SHA-256d for the PC and runs 15 tests in a few seconds:
+
+- every stratum message form the miner meets (subscribe, notify, set_difficulty, replies, both error forms, `"error": false`), and the malformed jobs it must refuse;
+- requests sent to the pool: `mining.authorize` with a `"` or `\` in the worker name, the 8-digit nonce of `mining.submit`;
+- the 80-byte header built from two jobs, one with a 300-byte coinbase and 3 merkle branches, against vectors computed independently in Python (`test/test_native/gen_vectors.py`, hashlib);
+- block 125552 for `checkValid()` and `nerd_sha256d_baked()`, and 300,000 nonces of `nerd_sha256d_baked()` against a plain SHA-256.
+
+The firmware files are compiled as they are; `test/native_shim` stands in for the few Arduino/ESP-IDF pieces they use (String, Serial, WiFiClient, mbedTLS SHA-256).
+
 ### Project guidelines
 
 - Current project was adapted to work with PlatformIO
