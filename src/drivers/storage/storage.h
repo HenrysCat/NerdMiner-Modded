@@ -81,6 +81,12 @@
 #define JSON_SPIFFS_KEY_BACKUPPOOLPORT	"backupPortNumber"
 #define JSON_SPIFFS_KEY_BACKUPPOOLPASS	"backupPoolPassword"
 #define JSON_SPIFFS_KEY_WEBPASSWORD	"webPassword"
+#define JSON_SPIFFS_KEY_MQTTENABLED	"mqttEnabled"
+#define JSON_SPIFFS_KEY_MQTTHOST	"mqttHost"
+#define JSON_SPIFFS_KEY_MQTTPORT	"mqttPort"
+#define JSON_SPIFFS_KEY_MQTTUSER	"mqttUser"
+#define JSON_SPIFFS_KEY_MQTTPASS	"mqttPass"
+#define JSON_SPIFFS_KEY_MQTTTOPIC	"mqttTopic"
 
 // settings
 struct TSettings
@@ -116,6 +122,14 @@ struct TSettings
 	int ledBrightness{ DEFAULT_LEDBRIGHTNESS };	// 1-255
 	bool ledScreenOff{ DEFAULT_LEDSCREENOFF };	// LED off while the screen is off
 	String WebPassword{ DEFAULT_WEBPASSWORD };	// LAN settings page login, never empty
+	// MQTT (Home Assistant): state published to <MqttTopic>/state, empty topic
+	// = nerdminer/<id>; see mqttPublisher.cpp
+	bool MqttEnabled{ false };
+	String MqttHost{ "" };
+	int MqttPort{ 1883 };
+	String MqttUser{ "" };
+	String MqttPass{ "" };
+	String MqttTopic{ "" };
 };
 
 #endif // _STORAGE_H_

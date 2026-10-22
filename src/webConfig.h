@@ -7,4 +7,8 @@
 void setup_webConfig(void);
 void webConfigProcess(void);
 
+// The miner's state as /api/status serves it (also the MQTT state message).
+#include <ArduinoJson.h>
+void fillMinerStatusJson(JsonDocument &doc);
+
 #endif // _WEBCONFIG_H

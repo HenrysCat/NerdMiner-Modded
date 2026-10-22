@@ -28,7 +28,7 @@ bool nvMemory::saveConfig(TSettings* Settings)
         Serial.println(F("SPIFS: Saving configuration."));
 
         // Create a JSON document (on the heap: it has outgrown a small stack)
-        DynamicJsonDocument json(2048);
+        DynamicJsonDocument json(3072); // room for the MQTT fields too
         json[JSON_SPIFFS_KEY_POOLURL] = Settings->PoolAddress;
         json[JSON_SPIFFS_KEY_POOLPORT] = Settings->PoolPort;
         json[JSON_SPIFFS_KEY_POOLPASS] = Settings->PoolPassword;
@@ -37,6 +37,12 @@ bool nvMemory::saveConfig(TSettings* Settings)
         json[JSON_SPIFFS_KEY_BACKUPPOOLPORT] = Settings->BackupPoolPort;
         json[JSON_SPIFFS_KEY_BACKUPPOOLPASS] = Settings->BackupPoolPassword;
         json[JSON_SPIFFS_KEY_WEBPASSWORD] = Settings->WebPassword;
+        json[JSON_SPIFFS_KEY_MQTTENABLED] = Settings->MqttEnabled;
+        json[JSON_SPIFFS_KEY_MQTTHOST] = Settings->MqttHost;
+        json[JSON_SPIFFS_KEY_MQTTPORT] = Settings->MqttPort;
+        json[JSON_SPIFFS_KEY_MQTTUSER] = Settings->MqttUser;
+        json[JSON_SPIFFS_KEY_MQTTPASS] = Settings->MqttPass;
+        json[JSON_SPIFFS_KEY_MQTTTOPIC] = Settings->MqttTopic;
         json[JSON_SPIFFS_KEY_TIMEZONE] = Settings->Timezone;
         json[JSON_SPIFFS_KEY_STATS2NV] = Settings->saveStats;
         json[JSON_SPIFFS_KEY_INVCOLOR] = Settings->invertColors;
@@ -104,7 +110,7 @@ bool nvMemory::loadConfig(TSettings* Settings)
             if (configFile)
             {
                 Serial.println("SPIFS: Loading config file");
-                DynamicJsonDocument json(2048);
+                DynamicJsonDocument json(3072); // room for the MQTT fields too
                 DeserializationError error = deserializeJson(json, configFile);
                 configFile.close();
                 serializeJsonPretty(json, Serial);
@@ -126,6 +132,12 @@ bool nvMemory::loadConfig(TSettings* Settings)
                     Settings->WebPassword = json[JSON_SPIFFS_KEY_WEBPASSWORD] | DEFAULT_WEBPASSWORD;
                     if (Settings->WebPassword.isEmpty())
                         Settings->WebPassword = DEFAULT_WEBPASSWORD;
+                    Settings->MqttEnabled = json[JSON_SPIFFS_KEY_MQTTENABLED] | Settings->MqttEnabled;
+                    Settings->MqttHost = json[JSON_SPIFFS_KEY_MQTTHOST] | Settings->MqttHost;
+                    Settings->MqttPort = json[JSON_SPIFFS_KEY_MQTTPORT] | Settings->MqttPort;
+                    Settings->MqttUser = json[JSON_SPIFFS_KEY_MQTTUSER] | Settings->MqttUser;
+                    Settings->MqttPass = json[JSON_SPIFFS_KEY_MQTTPASS] | Settings->MqttPass;
+                    Settings->MqttTopic = json[JSON_SPIFFS_KEY_MQTTTOPIC] | Settings->MqttTopic;
                     if (json.containsKey(JSON_SPIFFS_KEY_TIMEZONE))
                         Settings->Timezone = json[JSON_SPIFFS_KEY_TIMEZONE].as<int>();
                     if (json.containsKey(JSON_SPIFFS_KEY_STATS2NV))

@@ -10,6 +10,7 @@
 #include "mbedtls/md.h"
 #include "wManager.h"
 #include "webConfig.h"
+#include "mqttPublisher.h"
 #include "mining.h"
 #include "monitor.h"
 #include "drivers/displays/display.h"
@@ -331,6 +332,7 @@ void loop() {
 #endif
   wifiManagerProcess(); // avoid delays() in loop when non-blocking and other long running code
   webConfigProcess();
+  mqttProcess();
 
   vTaskDelay(50 / portTICK_PERIOD_MS);
 }
