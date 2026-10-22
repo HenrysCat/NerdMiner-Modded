@@ -9,6 +9,7 @@
 #include "ShaTests/nerdSHA256plus.h"
 #include "mbedtls/sha256.h"
 #include "vectors.h"
+#include "submitFilter.h"
 #include "SPIFFS.h"
 #define DEVKITV1 // any board: nvMemory.h includes the board header (see sources.cpp)
 #include "drivers/storage/nvMemory.h"
@@ -327,6 +328,24 @@ static void test_sha256d_baked_matches_reference()
   TEST_ASSERT_TRUE(passes > 0);
 }
 
+// ----------------------------------------------------------- submit filter --
+
+static void test_submit_filter()
+{
+  SubmitFilter f;
+  TEST_ASSERT_TRUE(f.firstTime(7, 0x1234));
+  TEST_ASSERT_FALSE(f.firstTime(7, 0x1234)); // found by both miners: sent once
+  TEST_ASSERT_TRUE(f.firstTime(7, 0x1235));
+  TEST_ASSERT_TRUE(f.firstTime(8, 0x1234));  // new job, new header: a new share
+  TEST_ASSERT_TRUE(f.firstTime(8, 0x1235));  // nothing carried over from job 7
+  // keeps the last SIZE nonces of the job
+  SubmitFilter g;
+  for (uint32_t n = 0; n < SubmitFilter::SIZE; n++)
+    TEST_ASSERT_TRUE(g.firstTime(1, n));
+  for (uint32_t n = 0; n < SubmitFilter::SIZE; n++)
+    TEST_ASSERT_FALSE(g.firstTime(1, n));
+}
+
 // ------------------------------------------------------------ config file --
 
 static TSettings sampleSettings(const char *wallet)
@@ -456,6 +475,7 @@ int main(int, char **)
   RUN_TEST(test_difficulty_of_a_hash);
   RUN_TEST(test_sha256d_baked_on_a_real_block);
   RUN_TEST(test_sha256d_baked_matches_reference);
+  RUN_TEST(test_submit_filter);
   RUN_TEST(test_config_round_trip);
   RUN_TEST(test_config_full_filesystem_keeps_old);
   RUN_TEST(test_config_power_cut_while_writing_keeps_old);

@@ -470,7 +470,7 @@ static void handleSave()
 // address or passwords. No CORS header either: Home Assistant and scripts
 // don't need one, and with it any web page open on a computer of the network
 // could read the SSID, the local IP and the pool.
-extern uint32_t templates, hashes, Mhashes;
+extern uint32_t templates;
 extern uint64_t upTime;
 extern volatile uint32_t shares, valids;
 extern double best_diff;
@@ -486,7 +486,7 @@ void fillMinerStatusJson(JsonDocument &doc)
   doc["state"] = mMonitor.NerdStatus == NM_hashing ? "mining" : mMonitor.NerdStatus == NM_Connecting ? "connecting" : "starting";
   doc["hashrate_khs"] = round(m.hashrateKHs * 10.0) / 10.0;
   doc["hashrate_avg_khs"] = round(m.avgHashrateKHs * 10.0) / 10.0; // since boot
-  doc["total_mhashes"] = Mhashes + hashes / 1000000; // also kept across restarts when stats are saved
+  doc["total_mhashes"] = (uint32_t)(getTotalHashes() / 1000000); // also kept across restarts when stats are saved
   doc["mining_time_s"] = (uint32_t)upTime;
   doc["templates"] = templates;
   doc["best_diff"] = getBestDiff();
