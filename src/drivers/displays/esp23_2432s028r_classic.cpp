@@ -69,10 +69,17 @@ void esp32_2432S028R_Init(void)
      // Serial.println(Settings.invertColors);  
       invertColors = Settings.invertColors;           
     }  
-  tft.invertDisplay(invertColors);
+  // TFT_INVERSION_ON (2-USB panel): inverted is its normal state, the setting
+  // flips it (see esp23_2432s028r.cpp)
+#ifdef TFT_INVERSION_ON
+  const bool panelInverted = !invertColors;
+#else
+  const bool panelInverted = invertColors;
+#endif
+  tft.invertDisplay(panelInverted);
   tft.setRotation(Settings.flipDisplay ? 3 : 1);
   tft.setSwapBytes(true); // Swap the colour byte order when rendering
-  if (invertColors) {
+  if (panelInverted) {
     tft.writecommand(ILI9341_GAMMASET);
     tft.writedata(2);
     delay(120);
