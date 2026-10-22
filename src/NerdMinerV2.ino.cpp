@@ -115,6 +115,14 @@ void setup()
     Serial.begin(115200);
 #endif //MONITOR_SPEED
 
+#if ARDUINO_USB_CDC_ON_BOOT
+  // Native USB serial (S3 boards): with the cable in a PC but no program
+  // reading the port, every print waited out its timeout, which stalled the
+  // stratum and monitor tasks: the ES3C35P averaged ~250 KH/s with dips to
+  // 40, against a steady 352 with the port read. Output nobody reads is now
+  // dropped instead.
+  Serial.setTxTimeoutMs(0);
+#endif
   Serial.setTimeout(0);
   delay(SECOND_MS/10);
 
