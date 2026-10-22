@@ -8,6 +8,7 @@
 #include "wManager.h"
 #include "mining.h"
 #include "monitor.h"
+#include "mqttPublisher.h"
 #include "drivers/devices/device.h"
 #include "drivers/displays/display.h"
 #include "drivers/storage/storage.h"
@@ -186,6 +187,17 @@ static void handleRoot()
     page += "<label><input type='checkbox' name='ledscreen' " + String(Settings.ledScreenOff ? "checked" : "") + "> LED off while the screen is off</label>";
   }
 #endif
+  flush();
+  page += F("<h3>MQTT (Home Assistant)</h3>");
+  page += "<label><input type='checkbox' name='mqtt' " + String(Settings.MqttEnabled ? "checked" : "") +
+          "> Publish the miner's state to an MQTT broker</label>";
+  page += "<label>Broker address (IP or name)</label><input type='text' name='mqhost' maxlength='64' value='" + htmlEscape(Settings.MqttHost) + "'>";
+  page += "<label>Broker port</label><input type='number' name='mqport' min='1' max='65535' value='" + String(Settings.MqttPort) + "'>";
+  page += "<label>User (optional)</label><input type='text' name='mquser' maxlength='64' autocomplete='off' value='" + htmlEscape(Settings.MqttUser) + "'>";
+  page += "<label>Password (optional)</label><input type='password' name='mqpass' maxlength='64' autocomplete='off' value='" + htmlEscape(Settings.MqttPass) + "'>";
+  page += "<label>Topic (empty: nerdminer/ and the end of the MAC address)</label><input type='text' name='mqtopic' maxlength='64' value='" + htmlEscape(Settings.MqttTopic) + "'>";
+  page += String("<p><small>") + (mqttConnected() ? "Connected to the broker." : Settings.MqttEnabled ? "Not connected to the broker." : "Off.") +
+          " Home Assistant finds the sensors by itself (MQTT discovery).</small></p>";
   page += F("<label>New password for this page (leave empty to keep it)</label>"
             "<input type='password' name='webpass' maxlength='63' autocomplete='new-password'>"
             "<label>New password again</label>"
@@ -256,6 +268,23 @@ static void handleSave()
     next.BackupPoolPort = constrain(webCfgServer.arg("bport").toInt(), 0, 65535);
   if (webCfgServer.hasArg("bpoolpass"))
     strlcpy(next.BackupPoolPassword, webCfgServer.arg("bpoolpass").c_str(), sizeof(next.BackupPoolPassword));
+  next.MqttEnabled = webCfgServer.hasArg("mqtt");
+  if (webCfgServer.hasArg("mqhost"))
+  {
+    next.MqttHost = webCfgServer.arg("mqhost").substring(0, 64);
+    next.MqttHost.trim();
+  }
+  if (webCfgServer.hasArg("mqport"))
+    next.MqttPort = constrain(webCfgServer.arg("mqport").toInt(), 1, 65535);
+  if (webCfgServer.hasArg("mquser"))
+    next.MqttUser = webCfgServer.arg("mquser").substring(0, 64);
+  if (webCfgServer.hasArg("mqpass"))
+    next.MqttPass = webCfgServer.arg("mqpass").substring(0, 64);
+  if (webCfgServer.hasArg("mqtopic"))
+  {
+    next.MqttTopic = webCfgServer.arg("mqtopic").substring(0, 64);
+    next.MqttTopic.trim();
+  }
   if (webCfgServer.hasArg("tz"))
     next.Timezone = constrain(webCfgServer.arg("tz").toInt(), -12, 14);
   if (webCfgServer.hasArg("currency"))
@@ -323,6 +352,18 @@ static void handleSave()
       requestPoolChange(next); // stratum task reconnects if the pool in use changed
     const bool passChanged = next.WebPassword != before.WebPassword;
     Settings.WebPassword = next.WebPassword; // this task is the only reader
+    if (next.MqttEnabled != before.MqttEnabled || next.MqttHost != before.MqttHost || next.MqttPort != before.MqttPort ||
+        next.MqttUser != before.MqttUser || next.MqttPass != before.MqttPass || next.MqttTopic != before.MqttTopic)
+    {
+      // read by mqttProcess() on this same task (Arduino loop)
+      Settings.MqttEnabled = next.MqttEnabled;
+      Settings.MqttHost = next.MqttHost;
+      Settings.MqttPort = next.MqttPort;
+      Settings.MqttUser = next.MqttUser;
+      Settings.MqttPass = next.MqttPass;
+      Settings.MqttTopic = next.MqttTopic;
+      mqttSettingsChanged();
+    }
     if (!next.Currency.equalsIgnoreCase(before.Currency))
       requestCurrencyChange(currencyFor(next.Currency).code); // monitor task
     Settings.Timezone = next.Timezone; // monitor task moves the clock
@@ -393,10 +434,11 @@ extern volatile uint32_t shares, valids;
 extern double best_diff;
 extern monitor_data mMonitor;
 
-static void handleStatus()
+// The miner's state as /api/status serves it; also the MQTT state message
+// (mqttPublisher.cpp). Cheap: cached values only.
+void fillMinerStatusJson(JsonDocument &doc)
 {
   const MinerStatus m = getMinerStatus();
-  DynamicJsonDocument doc(1536);
   doc["version"] = CURRENT_VERSION;
   doc["uptime_s"] = (uint32_t)(esp_timer_get_time() / 1000000ULL); // 64-bit clock: millis() wraps after 49.7 days
   doc["state"] = mMonitor.NerdStatus == NM_hashing ? "mining" : mMonitor.NerdStatus == NM_Connecting ? "connecting" : "starting";
@@ -454,7 +496,12 @@ static void handleStatus()
     bat["percent"] = plus2BatteryPercent(batMv);
   }
 #endif
+}
 
+static void handleStatus()
+{
+  DynamicJsonDocument doc(1536);
+  fillMinerStatusJson(doc);
   String out;
   serializeJson(doc, out);
   webCfgServer.sendHeader("Access-Control-Allow-Origin", "*");
