@@ -421,6 +421,8 @@ static void handleStatus()
   }
   pool["backup"] = onBackupPool();
   pool["subscribed"] = m.subscribed;
+  if (m.authorized >= 0)
+    pool["authorized"] = m.authorized == 1; // missing: no answer yet
   pool["difficulty"] = m.poolDifficulty;
   JsonObject wifi = doc.createNestedObject("wifi");
   wifi["ssid"] = WiFi.SSID();

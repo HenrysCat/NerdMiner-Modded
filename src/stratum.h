@@ -55,7 +55,7 @@ bool tx_mining_subscribe(WiFiClient& client, mining_subscribe& mSubscribe);
 bool parse_mining_subscribe(String line, mining_subscribe& mSubscribe);
 
 //Method Mining.authorise
-bool tx_mining_auth(WiFiClient& client, const char * user, const char * pass);
+bool tx_mining_auth(WiFiClient& client, const char * user, const char * pass, unsigned long &auth_id);
 stratum_method parse_mining_method(String line);
 bool parse_mining_notify(String line, mining_job& mJob);
 

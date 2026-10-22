@@ -107,7 +107,8 @@ function diff(d){if(!(d>0))return '0';if(d<1)return String(+d.toPrecision(2));va
 function dur(s){s=Math.floor(s||0);var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60),x=s%60;function p(n){return (n<10?'0':'')+n}return (d?d+'d ':'')+p(h)+':'+p(m)+':'+p(x)}
 function state(j){
   var st=$('st'),c='warn',t='Starting';
-  if(j.state==='mining'&&j.pool&&j.pool.subscribed){c='ok';t='Mining'}
+  if(j.pool&&j.pool.authorized===false){c='bad';t='Wallet refused by the pool'}
+  else if(j.state==='mining'&&j.pool&&j.pool.subscribed){c='ok';t='Mining'}
   else if(j.state==='connecting'||(j.pool&&!j.pool.subscribed)){c='warn';t='Connecting to pool'}
   st.className='pill '+c;set('stt',t)}
 function update(j){

@@ -22,7 +22,7 @@
 extern uint32_t templates;
 extern uint32_t hashes;
 extern uint32_t Mhashes;
-extern uint32_t totalKHashes;
+extern uint64_t totalKHashes;
 extern uint32_t elapsedKHs;
 extern uint64_t upTime;
 
@@ -432,8 +432,8 @@ String getTime(void){
   unsigned long currentHours, currentMinutes, currentSeconds;
   getTime(&currentHours, &currentMinutes, &currentSeconds);
 
-  char LocalHour[10];
-  sprintf(LocalHour, "%02d:%02d", currentHours, currentMinutes);
+  char LocalHour[24];
+  snprintf(LocalHour, sizeof(LocalHour), "%02lu:%02lu", currentHours, currentMinutes);
   
   String mystring(LocalHour);
   return LocalHour;
@@ -515,7 +515,7 @@ mining_data getMiningData(unsigned long mElapsed)
   char best_diff_string[16] = {0};
   suffix_string(getBestDiff(), best_diff_string, 16, 0);
 
-  char timeMining[15] = {0};
+  char timeMining[24] = {0}; // [15] overflowed from 10000 days
   uint64_t tm = upTime;
   int secs = tm % 60;
   tm /= 60;
@@ -523,11 +523,11 @@ mining_data getMiningData(unsigned long mElapsed)
   tm /= 60;
   int hours = tm % 24;
   int days = tm / 24;
-  sprintf(timeMining, "%01d  %02d:%02d:%02d", days, hours, mins, secs);
+  snprintf(timeMining, sizeof(timeMining), "%01d  %02d:%02d:%02d", days, hours, mins, secs);
 
   data.completedShares = shares;
   data.totalMHashes = Mhashes;
-  data.totalKHashes = totalKHashes;
+  data.totalKHashes = String((unsigned long long)totalKHashes);
   data.currentHashRate = getCurrentHashRate(mElapsed);
   data.templates = templates;
   data.bestDiff = best_diff_string;
@@ -544,7 +544,7 @@ clock_data getClockData(unsigned long mElapsed)
   clock_data data;
 
   data.completedShares = shares;
-  data.totalKHashes = totalKHashes;
+  data.totalKHashes = String((unsigned long long)totalKHashes);
   data.currentHashRate = getCurrentHashRate(mElapsed);
   data.btcPrice = getBTCprice();
   data.blockHeight = getBlockHeight();
@@ -572,7 +572,7 @@ coin_data getCoinData(unsigned long mElapsed)
   updateGlobalData(); // Update gData vars asking mempool APIs
 
   data.completedShares = shares;
-  data.totalKHashes = totalKHashes;
+  data.totalKHashes = String((unsigned long long)totalKHashes);
   data.currentHashRate = getCurrentHashRate(mElapsed);
   data.btcPrice = getBTCprice();
   data.currentTime = getTime();

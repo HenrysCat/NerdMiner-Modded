@@ -128,6 +128,7 @@ struct MinerStatus
   uint32_t rejected;    // ...and refused
   bool subscribed;      // connected and subscribed to the pool
   double poolDifficulty;
+  int8_t authorized;    // mining.authorize answer: -1 none yet, 0 refused, 1 accepted
 };
 MinerStatus getMinerStatus(void);
 
