@@ -133,5 +133,8 @@ public:
   template <class T> void println(const T &v) { print(v); print('\n'); }
   void println(double v, int d) { print(v, d); print('\n'); }
   void println() { print('\n'); }
+  // for serializeJson(..., Serial)
+  size_t write(uint8_t c) { if (on()) fputc(c, stderr); return 1; }
+  size_t write(const uint8_t *p, size_t n) { if (on()) fwrite(p, 1, n, stderr); return n; }
 };
 extern HostSerial Serial;

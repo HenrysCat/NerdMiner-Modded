@@ -106,8 +106,16 @@ bool SDCard::loadConfigFile(TSettings* Settings)
                 Serial.println("SDCard: Loading config file");
                 if (!error)
                 {
-                    serializeJsonPretty(json, Serial);
-                    Serial.print('\n');    
+                    {
+                        // On the serial log without the Wi-Fi and pool passwords
+                        StaticJsonDocument<512> shown;
+                        shown.set(json);
+                        for (const char *key : {JSON_KEY_PASW, JSON_KEY_POOLPASS})
+                            if (shown.containsKey(key))
+                                shown[key] = "***";
+                        serializeJsonPretty(shown, Serial);
+                        Serial.print('\n');
+                    }
                     if (json.containsKey(JSON_KEY_SSID)) {                
                         Settings->WifiSSID = json[JSON_KEY_SSID] | Settings->WifiSSID;
                     }
