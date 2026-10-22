@@ -129,7 +129,7 @@ var TR={
   mtime:'Tempo di mining',templates:'template',block:'blocco',time:'Ora',battery:'Batteria',pool:'Pool',up:'acceso da',heap:'memoria libera',updated:'aggiornato',
   starting:'Avvio',mining:'Mining',topool:'Connessione al pool',refused:'Wallet rifiutato dal pool',offline:'Offline',notime:'ora non ancora impostata',
   backup:'riserva',port:'porta',diff:'diff.',collecting:'Raccolta dati…',live:'live',now:'ora',min:'min',day:'g'},
- pt:{settings:'Configurações',connecting:'Conectando…',off:'Minerador inacessível — tentando de novo…',hashrate:'Hashrate',avg:'Média desde o arranque',total:'Total',hour:'Última hora',
+ pt:{settings:'Configurações',connecting:'Conectando…',off:'Minerador inacessível — tentando de novo…',hashrate:'Hashrate',avg:'Média desde o início',total:'Total',hour:'Última hora',
   s32:'Shares de 32 bits',accepted:'aceitos',rejected:'recusados',best:'Melhor dificuldade',alltime:'de sempre',blocks:'Blocos encontrados',oneday:'talvez um dia',pshares:'Shares do pool (dif. baixa)',
   mtime:'Tempo minerando',templates:'modelos',block:'bloco',time:'Hora',battery:'Bateria',pool:'Pool',up:'ligado há',heap:'memória livre',updated:'atualizado',
   starting:'Iniciando',mining:'Minerando',topool:'Conectando ao pool',refused:'Carteira recusada pelo pool',offline:'Offline',notime:'hora ainda não definida',
