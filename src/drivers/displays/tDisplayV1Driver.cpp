@@ -12,8 +12,8 @@
 #include "rotation.h"
 #include "display.h"
 #include <Preferences.h>
-#if defined(M5STICK_C_PLUS2)
 #include "mining.h"
+#if defined(M5STICK_C_PLUS2)
 #include "m5stickPlus2Hw.h"
 #endif
 
@@ -231,6 +231,26 @@ static String shareCount(uint32_t n)
 }
 #endif
 
+// Wallet refused by the pool (mining.authorize answered false or with an
+// error): every share would be rejected. Drawn over the stats box until the
+// pool accepts a worker again, i.e. after the address is fixed in the settings.
+static void drawWalletRefused()
+{
+  if (poolAuthorized() != 0)
+    return;
+  const int x = 74, y = 14, w = 240 - 74, h = 60;
+  background.fillRect(x, y, w, h, TFT_RED);
+  background.drawRect(x, y, w, h, TFT_WHITE);
+  background.setTextFont(2);
+  background.setTextSize(1);
+  background.setTextColor(TFT_WHITE, TFT_RED);
+  background.setTextDatum(MC_DATUM);
+  background.drawString("WALLET REFUSED", x + w / 2, y + 12, 2);
+  background.drawString("by the pool:", x + w / 2, y + 30, 2);
+  background.drawString("check the BTC address", x + w / 2, y + 48, 2);
+  background.setTextDatum(TL_DATUM);
+}
+
 void tDisplay_MinerScreen(unsigned long mElapsed)
 {
   if (restoreSavedScreen(mElapsed)) return;
@@ -327,6 +347,8 @@ void tDisplay_MinerScreen(unsigned long mElapsed)
   render.setFontSize(8);
   render.rdrawString(data.currentTime.c_str(), 215, 1, TFT_BLACK);
 #endif
+
+  drawWalletRefused();
 
   // Push prepared background to screen
   background.pushSprite(0, 0);

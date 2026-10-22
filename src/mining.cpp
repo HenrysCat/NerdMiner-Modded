@@ -249,6 +249,11 @@ static void statusRateSample(uint64_t kh, uint32_t ms)
     s_rateCount++;
 }
 
+int8_t poolAuthorized(void)
+{
+  return s_authorized;
+}
+
 MinerStatus getMinerStatus(void)
 {
   MinerStatus s{};
