@@ -24,6 +24,40 @@ unsigned long getNextId(unsigned long id) {
     return ++id;
 }
 
+// A value put between quotes in a JSON request: a " or \ in a worker name or a
+// password ended the string early and the pool got invalid JSON.
+static String jsonEscape(const char *s)
+{
+    String out;
+    out.reserve(strlen(s) + 8);
+    for (; *s; ++s)
+    {
+        const char c = *s;
+        if (c == '"' || c == '\\')
+        {
+            out += '\\';
+            out += c;
+        }
+        else if ((uint8_t)c < 0x20)
+        {
+            char u[7];
+            snprintf(u, sizeof(u), "\\u%04x", (unsigned)(uint8_t)c);
+            out += u;
+        }
+        else
+            out += c;
+    }
+    return out;
+}
+
+static bool isHex(const String &s)
+{
+    for (size_t i = 0; i < s.length(); ++i)
+        if (!isxdigit((unsigned char)s[i]))
+            return false;
+    return true;
+}
+
 //Verify Payload doesn't has zero lenght
 bool verifyPayload (String* line){
   if(line->length() == 0) return false;
@@ -75,9 +109,9 @@ bool tx_mining_subscribe(WiFiClient& client, mining_subscribe& mSubscribe)
     // Subscribe
     id = 1; //Initialize id messages
     #ifndef HAN
-    sprintf(payload, "{\"id\": %u, \"method\": \"mining.subscribe\", \"params\": [\"NerdMinerV2/%s\"]}\n", id, CURRENT_VERSION);
+    snprintf(payload, sizeof(payload), "{\"id\": %lu, \"method\": \"mining.subscribe\", \"params\": [\"NerdMinerV2/%s\"]}\n", id, CURRENT_VERSION);
     #else
-    sprintf(payload, "{\"id\": %u, \"method\": \"mining.subscribe\", \"params\": [\"HAN_SOLOminer/%s\"]}\n", id, CURRENT_VERSION);
+    snprintf(payload, sizeof(payload), "{\"id\": %lu, \"method\": \"mining.subscribe\", \"params\": [\"HAN_SOLOminer/%s\"]}\n", id, CURRENT_VERSION);
     #endif
     
     Serial.printf("[WORKER] ==> Mining subscribe\n");
@@ -135,14 +169,15 @@ mining_subscribe init_mining_subscribe(void)
 }
 
 // STEP 2: Pool server auth (authorize)
-bool tx_mining_auth(WiFiClient& client, const char * user, const char * pass)
+bool tx_mining_auth(WiFiClient& client, const char * user, const char * pass, unsigned long &auth_id)
 {
     char payload[BUFFER] = {0};
 
     // Authorize
     id = getNextId(id);
-    sprintf(payload, "{\"params\": [\"%s\", \"%s\"], \"id\": %u, \"method\": \"mining.authorize\"}\n", 
-      user, pass, id);
+    auth_id = id; // the pool's answer to this id says whether it took the wallet
+    snprintf(payload, sizeof(payload), "{\"params\": [\"%s\", \"%s\"], \"id\": %lu, \"method\": \"mining.authorize\"}\n",
+      jsonEscape(user).c_str(), jsonEscape(pass).c_str(), id);
     
     Serial.printf("[WORKER] ==> Autorize work\n");
     Serial.print("  Sending  : "); Serial.println(payload);
@@ -150,8 +185,8 @@ bool tx_mining_auth(WiFiClient& client, const char * user, const char * pass)
 
     vTaskDelay(200 / portTICK_PERIOD_MS); //Small delay
 
-    //Don't parse here any answer
-    //Miner started to receive mining notifications so better parse all at main thread
+    // The answer is parsed with the other messages in the stratum loop
+    // (runStratumWorker, auth_id).
 
     return true;
 }
@@ -208,6 +243,32 @@ bool parse_mining_notify(String line, mining_job& mJob)
     mJob.ntime = String((const char*) doc["params"][7]);
     mJob.clean_jobs = doc["params"][8]; //bool
 
+    // Sizes the header code relies on (calculateMiningData copies them into
+    // fixed buffers): a malformed job is refused instead of overflowing them.
+    {
+      const char *bad = nullptr;
+      const int nbitsExp = mJob.nbits.length() == 8 && isHex(mJob.nbits)
+                               ? (int)strtol(mJob.nbits.substring(0, 2).c_str(), nullptr, 16) : -1;
+      if (mJob.job_id.isEmpty()) bad = "job_id";
+      else if (mJob.prev_block_hash.length() != 64 || !isHex(mJob.prev_block_hash)) bad = "prevhash";
+      else if (mJob.version.length() != 8 || !isHex(mJob.version)) bad = "version";
+      else if (nbitsExp < 5 || nbitsExp > 0x20) bad = "nbits";
+      else if (mJob.ntime.length() != 8 || !isHex(mJob.ntime)) bad = "ntime";
+      else if ((mJob.coinb1.length() | mJob.coinb2.length()) & 1 || !isHex(mJob.coinb1) || !isHex(mJob.coinb2)) bad = "coinbase";
+      else if (mJob.merkle_branch.isNull() || mJob.merkle_branch.size() > 32) bad = "merkle_branch";
+      else
+        for (JsonVariant m : mJob.merkle_branch)
+        {
+          const char *h = m.as<const char *>();
+          if (!h || strlen(h) != 64 || !isHex(String(h))) { bad = "merkle_branch"; break; }
+        }
+      if (bad)
+      {
+        Serial.printf("    mining.notify refused: bad %s\n", bad);
+        return false;
+      }
+    }
+
     #ifdef DEBUG_MINING
     Serial.print("    job_id: "); Serial.println(mJob.job_id);
     Serial.print("    prevhash: "); Serial.println(mJob.prev_block_hash);
@@ -240,10 +301,10 @@ bool tx_mining_submit(WiFiClient& client, mining_subscribe mWorker, mining_job m
     // Submit
     id = getNextId(id);
     submit_id = id;
-    sprintf(payload, "{\"id\":%u,\"method\":\"mining.submit\",\"params\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]}\n",
+    snprintf(payload, sizeof(payload), "{\"id\":%lu,\"method\":\"mining.submit\",\"params\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]}\n",
         id,
-        mWorker.wName,//"bc1qvv469gmw4zz6qa4u4dsezvrlmqcqszwyfzhgwj", //mWorker.name,
-        mJob.job_id.c_str(),
+        jsonEscape(mWorker.wName).c_str(),
+        jsonEscape(mJob.job_id.c_str()).c_str(),
         mWorker.extranonce2.c_str(),
         mJob.ntime.c_str(),
         nonceHex
@@ -265,8 +326,14 @@ bool parse_mining_set_difficulty(String line, double& difficulty)
     if (error) return false;
     if (!doc.containsKey("params")) return false;
 
-    Serial.print("    difficulty: "); Serial.println((double)doc["params"][0],12);
-    difficulty = (double)doc["params"][0];
+    const double d = doc["params"][0] | 0.0;
+    Serial.print("    difficulty: "); Serial.println(d, 12);
+    if (!(d > 0) || isinf(d))
+    {
+        Serial.println("    difficulty ignored (not a positive number)");
+        return false; // 0 or less would make every hash a share
+    }
+    difficulty = d;
 
     return true;
 }
@@ -276,7 +343,7 @@ bool tx_suggest_difficulty(WiFiClient& client, double difficulty)
     char payload[BUFFER] = {0};
 
     id = getNextId(id);
-    sprintf(payload, "{\"id\":%d,\"method\":\"mining.suggest_difficulty\",\"params\":[%.10g]}\n", id, difficulty);
+    snprintf(payload, sizeof(payload), "{\"id\":%lu,\"method\":\"mining.suggest_difficulty\",\"params\":[%.10g]}\n", id, difficulty);
     
     Serial.print("  Sending  : "); Serial.print(payload);
     return client.print(payload);

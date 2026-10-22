@@ -65,7 +65,7 @@ nvs_handle_t stat_handle;
 uint32_t templates = 0;
 uint32_t hashes = 0;
 uint32_t Mhashes = 0;
-uint32_t totalKHashes = 0;
+uint64_t totalKHashes = 0; // 32 bits wrapped after ~4.3 TH (about 50 days at 1 MH/s)
 uint32_t elapsedKHs = 0;
 uint64_t upTime = 0;
 
@@ -225,18 +225,25 @@ volatile uint32_t g_shareFoundEvents = 0; // see mining.h
 volatile uint32_t g_blockFoundEvents = 0;
 static volatile uint32_t s_sharesRejected = 0;
 static volatile double s_poolDifficulty = DEFAULT_DIFFICULTY;
+// mining.authorize: id of the request still waiting for its answer (0: none),
+// and the answer: -1 none yet, 0 the pool refused the wallet/worker, 1 accepted.
+static unsigned long s_authId = 0;
+static volatile int8_t s_authorized = -1;
 // ...and the kH counter, sampled once a second by the monitor loop.
 #define STATUS_RATE_SAMPLES 11 // 10 s window
-static uint32_t s_rateKh[STATUS_RATE_SAMPLES];
+static uint64_t s_rateKh[STATUS_RATE_SAMPLES];
 static uint32_t s_rateMs[STATUS_RATE_SAMPLES];
 static volatile uint8_t s_rateHead = 0, s_rateCount = 0;
-static uint32_t s_bootKh = 0, s_bootMs = 0;
+// The since-boot average uses the 64-bit clock: millis() wraps after 49.7 days.
+static uint64_t s_bootKh = 0;
+static int64_t s_bootUs = 0, s_lastSampleUs = 0;
 
-static void statusRateSample(uint32_t kh, uint32_t ms)
+static void statusRateSample(uint64_t kh, uint32_t ms)
 {
   const uint8_t i = (s_rateHead + 1) % STATUS_RATE_SAMPLES;
   s_rateKh[i] = kh;
   s_rateMs[i] = ms;
+  s_lastSampleUs = esp_timer_get_time();
   s_rateHead = i;
   if (s_rateCount < STATUS_RATE_SAMPLES)
     s_rateCount++;
@@ -252,14 +259,15 @@ MinerStatus getMinerStatus(void)
     const uint32_t ms = s_rateMs[head] - s_rateMs[oldest];
     if (ms)
       s.hashrateKHs = (s_rateKh[head] - s_rateKh[oldest]) * 1000.0f / ms;
-    const uint32_t bootMs = s_rateMs[head] - s_bootMs;
-    if (bootMs)
-      s.avgHashrateKHs = (s_rateKh[head] - s_bootKh) * 1000.0f / bootMs;
+    const int64_t bootUs = s_lastSampleUs - s_bootUs;
+    if (bootUs > 0)
+      s.avgHashrateKHs = (double)(s_rateKh[head] - s_bootKh) * 1e6 / (double)bootUs;
   }
   s.accepted = s_sharesAccepted;
   s.rejected = s_sharesRejected;
   s.subscribed = isMinerSuscribed;
   s.poolDifficulty = s_poolDifficulty;
+  s.authorized = s_authorized;
   return s;
 }
 
@@ -354,8 +362,8 @@ bool checkPoolConnection(void) {
 unsigned long mStart0Hashrate = 0;
 bool checkPoolInactivity(unsigned int keepAliveTime, unsigned long inactivityTime){ 
 
-    unsigned long currentKHashes = (Mhashes*1000) + hashes/1000;
-    unsigned long elapsedKHs = currentKHashes - totalKHashes;
+    uint64_t currentKHashes = (uint64_t)Mhashes * 1000 + hashes / 1000;
+    uint64_t elapsedKHs = currentKHashes - totalKHashes;
 
     uint32_t time_now = millis();
 
@@ -366,7 +374,9 @@ bool checkPoolInactivity(unsigned int keepAliveTime, unsigned long inactivityTim
       mLastTXtoPool = time_now;
       Serial.println("  Sending  : KeepAlive suggest_difficulty");
       //if (client.print("{}\n") == 0) {
-      tx_suggest_difficulty(client, DEFAULT_DIFFICULTY);
+      // The difficulty the pool already gave us: suggesting the minimum here
+      // made some pools restart their vardiff every 30 s without shares.
+      tx_suggest_difficulty(client, s_poolDifficulty);
       /*if(tx_suggest_difficulty(client, DEFAULT_DIFFICULTY)){
         Serial.println("  Sending keepAlive to pool -> Detected client disconnected");
         return true;
@@ -415,6 +425,22 @@ std::list<std::shared_ptr<JobRequest>> s_job_request_list_hw;
 #endif
 std::list<std::shared_ptr<JobResult>> s_job_result_list;
 static volatile uint8_t s_working_current_job_id = 0xFF;
+
+// Queues a miner's result; s_job_mutex held. When the list is full (the stratum
+// task busy for a while) a result without a share used to be dropped, and its
+// hashes were never counted: now they are added to the last queued result.
+// Results with a share are kept; the hard cap only guards against a stuck
+// stratum task.
+static void pushJobResult(const std::shared_ptr<JobResult> &r, size_t limit)
+{
+  if (s_job_result_list.size() >= limit && !s_job_result_list.empty() &&
+      (r->nonce == 0xFFFFFFFF || s_job_result_list.size() >= 4 * limit))
+  {
+    s_job_result_list.back()->nonce_count += r->nonce_count;
+    return;
+  }
+  s_job_result_list.push_back(r);
+}
 #if defined(PIPELINED_ASM_MINING) && defined(CONFIG_IDF_TARGET_ESP32)
 // What the pipelined HW loop works from (layout is known to the asm, see
 // src/pipelined_hw_sha_classic_v2.S).
@@ -598,7 +624,8 @@ void runStratumWorker(void *name) {
       strlcpy(mWorker.wName, Settings.BtcWallet, sizeof(mWorker.wName));
       strlcpy(mWorker.wPass, activePoolPassword(), sizeof(mWorker.wPass));
       // STEP 2: Pool authorize work (Block Info)
-      tx_mining_auth(client, mWorker.wName, mWorker.wPass); //Don't verifies authoritzation, TODO
+      s_authorized = -1;
+      tx_mining_auth(client, mWorker.wName, mWorker.wPass, s_authId); // answer checked in the loop below
       //tx_mining_auth2(client, mWorker.wName, mWorker.wPass); //Don't verifies authoritzation, TODO
 
       // STEP 3: Suggest pool difficulty
@@ -772,6 +799,17 @@ void runStratumWorker(void *name) {
                                       break;
           case STRATUM_SUCCESS:       {
                                         unsigned long id = parse_extract_id(line);
+                                        if (s_authId != 0 && id == s_authId)
+                                        {
+                                          // "result": false without an error is a refusal too
+                                          s_authId = 0;
+                                          s_authorized = parse_extract_result(line) ? 1 : 0;
+                                          if (s_authorized == 1)
+                                            Serial.println("[STRATUM] Worker authorized by the pool");
+                                          else
+                                            Serial.printf("[STRATUM] The pool REFUSED the worker \"%s\": check the BTC address in the settings\n", mWorker.wName);
+                                          break;
+                                        }
                                         auto itt = s_submition_map.find(id);
                                         if (itt != s_submition_map.end())
                                         {
@@ -806,10 +844,17 @@ void runStratumWorker(void *name) {
                                       break;
           case STRATUM_PARSE_ERROR:   {
                                         unsigned long id = parse_extract_id(line);
+                                        if (s_authId != 0 && id == s_authId)
+                                        {
+                                          s_authId = 0;
+                                          s_authorized = 0;
+                                          Serial.printf("[STRATUM] The pool REFUSED the worker \"%s\": check the BTC address in the settings\n", mWorker.wName);
+                                          break;
+                                        }
                                         auto itt = s_submition_map.find(id);
                                         if (itt != s_submition_map.end())
                                         {
-                                          Serial.printf("Refuse submition %d\n", id);
+                                          Serial.printf("Refuse submition %lu\n", id);
                                           s_sharesRejected++;
                                           if (itt->second->is32bit)
                                             shares32Rejected++;
@@ -958,8 +1003,7 @@ void minerWorkerSw(void * task_id)
       std::lock_guard<std::mutex> lock(s_job_mutex);
       if (result)
       {
-        if (s_job_result_list.size() < 16)
-          s_job_result_list.push_back(result);
+        pushJobResult(result, 16);
         result.reset();
       }
       if (!s_job_request_list_sw.empty())
@@ -1304,8 +1348,7 @@ void minerWorkerHw(void * task_id)
       std::lock_guard<std::mutex> lock(s_job_mutex);
       if (result)
       {
-        if (s_job_result_list.size() < 16)
-          s_job_result_list.push_back(result);
+        pushJobResult(result, 16);
         result.reset();
       }
       if (!s_job_request_list_hw.empty())
@@ -1384,8 +1427,7 @@ void minerWorkerHw(void * task_id)
               share->difficulty = cand_diff;
               memcpy(share->hash, sw_hash, sizeof(sw_hash));
               std::lock_guard<std::mutex> lock(s_job_mutex);
-              if (s_job_result_list.size() < 64) // only guards against a stuck stratum task
-                s_job_result_list.push_back(share);
+              pushJobResult(share, 64);
             }
           }
 
@@ -1419,8 +1461,7 @@ void minerWorkerHw(void * task_id)
             progress->difficulty = job->difficulty;
             reported = done;
             std::lock_guard<std::mutex> lock(s_job_mutex);
-            if (s_job_result_list.size() < 64)
-              s_job_result_list.push_back(progress);
+            pushJobResult(progress, 64);
           }
         }
         result->nonce_count = (n - job->nonce_start) - reported;
@@ -1859,8 +1900,7 @@ void minerWorkerHw(void * task_id)
       std::lock_guard<std::mutex> lock(s_job_mutex);
       if (result)
       {
-        if (s_job_result_list.size() < 16)
-          s_job_result_list.push_back(result);
+        pushJobResult(result, 16);
         result.reset();
       }
       if (!s_job_request_list_hw.empty())
@@ -1975,8 +2015,7 @@ void minerWorkerHw(void * task_id)
             share->difficulty = cand_diff;
             memcpy(share->hash, sw_hash, sizeof(sw_hash));
             std::lock_guard<std::mutex> lock(s_job_mutex);
-            if (s_job_result_list.size() < 64) // only guards against a stuck stratum task
-              s_job_result_list.push_back(share);
+            pushJobResult(share, 64);
           }
 
           #ifdef DEBUG_MINING
@@ -2292,12 +2331,12 @@ void runMonitor(void *name)
 
   uint32_t seconds_elapsed = 0;
 
-  totalKHashes = (Mhashes * 1000) + hashes / 1000;
+  totalKHashes = (uint64_t)Mhashes * 1000 + hashes / 1000;
   uint32_t last_update_millis = millis();
   uint32_t uptime_frac = 0;
   s_bootKh = totalKHashes;
-  s_bootMs = last_update_millis;
-  statusRateSample(s_bootKh, s_bootMs);
+  statusRateSample(s_bootKh, last_update_millis);
+  s_bootUs = s_lastSampleUs;
 
   while (1)
   {
@@ -2346,8 +2385,8 @@ void runMonitor(void *name)
       }
       #endif
 
-      unsigned long currentKHashes = (Mhashes * 1000) + hashes / 1000;
-      elapsedKHs = currentKHashes - totalKHashes;
+      uint64_t currentKHashes = (uint64_t)Mhashes * 1000 + hashes / 1000;
+      elapsedKHs = (uint32_t)(currentKHashes - totalKHashes);
       totalKHashes = currentKHashes;
       statusRateSample(currentKHashes, now_millis);
 

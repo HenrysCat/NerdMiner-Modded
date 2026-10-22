@@ -82,13 +82,13 @@ void m5stickCDriver_ClockScreen(unsigned long mElapsed)
   M5.Lcd.fillScreen(BLACK);
 
   //Mining Time
-  char timeMining[15]; 
+  char timeMining[24];
   unsigned long secElapsed = millis() / 1000;
   int days = secElapsed / 86400; 
   int hours = (secElapsed - (days * 86400)) / 3600;                                                        //Number of seconds in an hour
   int mins = (secElapsed - (days * 86400) - (hours * 3600)) / 60;                                              //Remove the number of hours and calculate the minutes.
   int secs = secElapsed - (days * 86400) - (hours * 3600) - (mins * 60);   
-  sprintf(timeMining, "%01d  %02d:%02d:%02d", days, hours, mins, secs);
+  snprintf(timeMining, sizeof(timeMining), "%01d  %02d:%02d:%02d", days, hours, mins, secs);
 
   M5.Lcd.setTextFont(2);
   M5.Lcd.setTextColor(GRAY,BLACK);

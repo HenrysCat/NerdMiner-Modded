@@ -99,8 +99,8 @@ void oledDisplay_Screen1(unsigned long mElapsed)
 void oledDisplay_Screen2(unsigned long mElapsed)
 {
   mining_data data = getMiningData(mElapsed);
-  char temp[8];
-  sprintf(temp, "%s°c", data.temp.c_str());
+  char temp[16]; // [8] overflowed from 100 °C ("100.5" + 2-byte "°" + "c")
+  snprintf(temp, sizeof(temp), "%s°c", data.temp.c_str());
 
   u8g2.clearBuffer(); 
   u8g2.setFont(u8g2_font_helvB18_tf);
