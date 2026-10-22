@@ -205,7 +205,7 @@ void getNextExtranonce2(int extranonce2_size, char *extranonce2) {
 
 miner_data init_miner_data(void){
   
-  miner_data newMinerData; 
+  miner_data newMinerData = {}; // valid = false until calculateMiningData is done
   return newMinerData;
 }
 
@@ -236,13 +236,15 @@ miner_data calculateMiningData(mining_subscribe& mWorker, mining_job mJob){
     // hashed the same header again and re-submitted the same share -> "duplicate share" (issue #4).
     {
         static uint32_t s_extranonce2 = 0;
-        int size = mWorker.extranonce2_size;
-        if (size < 1 || size > 16)
+        const int size = mWorker.extranonce2_size;
+        if (size < 1 || size > MAX_EXTRANONCE2_SIZE)
         {
-            Serial.println("Unknown extranonce2");
-            size = 4;
+            // parse_mining_subscribe refuses these: guessing a size here
+            // only got every share rejected
+            Serial.printf("    extranonce2_size %d: job not prepared\n", size);
+            return mMiner;
         }
-        char en2[2 * 16 + 1];
+        char en2[2 * MAX_EXTRANONCE2_SIZE + 1];
         uint32_t v = ++s_extranonce2;
         for (int i = 2 * size - 1; i >= 0; --i, v >>= 4)
             en2[i] = "0123456789abcdef"[v & 0xF];
@@ -268,7 +270,12 @@ miner_data calculateMiningData(mining_subscribe& mWorker, mining_job mJob){
             coinbase_buffer = coinbase_heap;
             coinbase_size = coinbase_hex + 1;
         } else
-            Serial.printf("    coinbase: %u hex digits, out of memory\n", (unsigned)coinbase_hex);
+        {
+            // A cut coinbase gives a wrong merkle root and every share is
+            // rejected: better not to mine this job at all.
+            Serial.printf("    coinbase: %u hex digits, out of memory: job not prepared\n", (unsigned)coinbase_hex);
+            return mMiner;
+        }
     }
     snprintf(coinbase_buffer, coinbase_size, "%s%s%s%s",
              mJob.coinb1.c_str(), mWorker.extranonce1.c_str(),
@@ -318,7 +325,7 @@ miner_data calculateMiningData(mining_subscribe& mWorker, mining_job mJob){
     
     byte merkle_concatenated[32 * 2];
     for (size_t k=0; k < mJob.merkle_branch.size(); k++) {
-        const char* merkle_element = (const char*) mJob.merkle_branch[k];
+        const char* merkle_element = mJob.merkle_branch[k].c_str();
         uint8_t bytearray[32];
         size_t res = to_byte_array(merkle_element, 64, bytearray);
 
@@ -472,6 +479,7 @@ miner_data calculateMiningData(mining_subscribe& mWorker, mining_job mJob){
     }
     Serial.println("");
     #endif
+  mMiner.valid = true;
   return mMiner;
 }
 

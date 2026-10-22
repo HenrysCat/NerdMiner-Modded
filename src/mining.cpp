@@ -579,6 +579,17 @@ void runStratumWorker(void *name) {
     return true;
   };
 
+  // Midstates of the current job. Filled on a mining.notify and read again on
+  // every later pass to top up the miners' queues, so they must outlive one
+  // pass of the loop (declared inside it, every refill read uninitialized
+  // stack memory that only happened to still hold the right values).
+  uint32_t hw_midstate[8] = {0};
+  uint32_t diget_mid[8] = {0};
+  uint32_t bake[16] = {0};
+  #if defined(CONFIG_IDF_TARGET_ESP32)
+  uint8_t sha_buffer_swap[128] = {0};
+  #endif
+
   while(true) {
 
     if(takePoolChange()){
@@ -678,13 +689,6 @@ void runStratumWorker(void *name) {
                     Settings.PoolAddress.c_str(), Settings.PoolPort);
     }
 
-    uint32_t hw_midstate[8];
-    uint32_t diget_mid[8];
-    uint32_t bake[16];
-    #if defined(CONFIG_IDF_TARGET_ESP32)
-    uint8_t sha_buffer_swap[128];
-    #endif
-
     //Read pending messages from pool
     while(client.connected() && client.available())
     {
@@ -693,9 +697,26 @@ void runStratumWorker(void *name) {
       stratum_method result = parse_mining_method(line);
       switch (result)
       {
-          case MINING_NOTIFY:         if(parse_mining_notify(line, mJob))
+          case MINING_NOTIFY:         {
+                                      mining_job newJob;
+                                      if(parse_mining_notify(line, newJob))
                                       {
-                                          // The old job keeps mining while the new one is prepared below
+                                          // Prepared aside first: if that fails (out of memory for a big
+                                          // coinbase) the old job, its extranonce2 and mJob stay as they
+                                          // were and the miners carry on with it until the next notify.
+                                          HW_SHA_REQUEST(); // S3: the hashes below need the engine the HW miner is holding
+                                          const String prevExtranonce2 = mWorker.extranonce2;
+                                          miner_data newMiner = calculateMiningData(mWorker, newJob);
+                                          if (!newMiner.valid)
+                                          {
+                                            mWorker.extranonce2 = prevExtranonce2;
+                                            Serial.println("[STRATUM] New job could not be prepared, still mining the previous one");
+                                            break;
+                                          }
+                                          mJob = newJob;
+                                          mMiner = newMiner;
+
+                                          // The old job kept mining while the new one was prepared above
                                           // (calculateMiningData prints a lot to the UART, which blocks for
                                           // hundreds of ms); the queues are swapped atomically just before
                                           // the new chunks are pushed instead of idling the miners up front.
@@ -712,9 +733,6 @@ void runStratumWorker(void *name) {
                                           hashes -= mh*1000000;
 
                                           //Prepare data for new jobs
-                                          HW_SHA_REQUEST(); // S3: the hashes below need the engine the HW miner is holding
-                                          mMiner=calculateMiningData(mWorker, mJob);
-
                                           memset(mMiner.bytearray_blockheader+80, 0, 128-80);
                                           mMiner.bytearray_blockheader[80] = 0x80;
                                           mMiner.bytearray_blockheader[126] = 0x02;
@@ -797,6 +815,7 @@ void runStratumWorker(void *name) {
                                         client.stop();
                                         isMinerSuscribed=false;
                                         MiningJobStop(job_pool, s_submition_map);
+                                      }
                                       }
                                       break;
           case MINING_SET_DIFFICULTY: parse_mining_set_difficulty(line, currentPoolDifficulty);

@@ -6,14 +6,19 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <vector>
 
 #define MAX_MERKLE_BRANCHES 32
+#define MAX_EXTRANONCE2_SIZE 16 // bytes; calculateMiningData writes up to 2x that many hex digits
 #define HASH_SIZE 32
 #define COINBASE_SIZE 100
 #define COINBASE2_SIZE 128
 
 #define BUFFER_JSON_DOC 4096
 #define BUFFER 1024
+// Longest mining.notify accepted (its JSON document is sized from the line):
+// pools with many payout outputs send coinbases of several KB.
+#define MAX_NOTIFY_LEN 32768
 
 typedef struct {
     String sub_details;
@@ -30,7 +35,7 @@ typedef struct {
     String coinb1;
     String coinb2;
     String nbits;
-    JsonArray merkle_branch;
+    std::vector<String> merkle_branch; // own copy: a JsonArray pointed into the shared JSON document
     String version;
     uint32_t target;
     String ntime;
@@ -47,7 +52,7 @@ typedef enum {
 
 unsigned long getNextId(unsigned long id);
 bool verifyPayload (String* line);
-bool checkError(const StaticJsonDocument<BUFFER_JSON_DOC>& doc);
+bool checkError(const JsonDocument& doc);
 
 //Method Mining.subscribe
 mining_subscribe init_mining_subscribe(void);

@@ -152,6 +152,7 @@ typedef struct{
   uint8_t bytearray_pooltarget[32];
   uint8_t merkle_result[32];
   uint8_t bytearray_blockheader[128];
+  bool valid; // false: the job could not be prepared (see calculateMiningData)
 } miner_data;
 
 
