@@ -1,6 +1,7 @@
 // MQTT publisher, see mqttPublisher.h. Uses ESP-IDF's MQTT client (esp-mqtt,
 // already in the Arduino core): no extra library. The client runs in its own
 // task and reconnects by itself; this file only starts/stops it and publishes.
+#ifndef NO_MQTT // see mqttPublisher.h
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
@@ -195,3 +196,4 @@ void mqttProcess(void)
     publishState();
   }
 }
+#endif // NO_MQTT

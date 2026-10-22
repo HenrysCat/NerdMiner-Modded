@@ -188,6 +188,7 @@ static void handleRoot()
   }
 #endif
   flush();
+#ifndef NO_MQTT
   page += F("<h3>MQTT (Home Assistant)</h3>");
   page += "<label><input type='checkbox' name='mqtt' " + String(Settings.MqttEnabled ? "checked" : "") +
           "> Publish the miner's state to an MQTT broker</label>";
@@ -198,6 +199,7 @@ static void handleRoot()
   page += "<label>Topic (empty: nerdminer/ and the end of the MAC address)</label><input type='text' name='mqtopic' maxlength='64' value='" + htmlEscape(Settings.MqttTopic) + "'>";
   page += String("<p><small>") + (mqttConnected() ? "Connected to the broker." : Settings.MqttEnabled ? "Not connected to the broker." : "Off.") +
           " Home Assistant finds the sensors by itself (MQTT discovery).</small></p>";
+#endif
   page += F("<label>New password for this page (leave empty to keep it)</label>"
             "<input type='password' name='webpass' maxlength='63' autocomplete='new-password'>"
             "<label>New password again</label>"
@@ -268,6 +270,7 @@ static void handleSave()
     next.BackupPoolPort = constrain(webCfgServer.arg("bport").toInt(), 0, 65535);
   if (webCfgServer.hasArg("bpoolpass"))
     strlcpy(next.BackupPoolPassword, webCfgServer.arg("bpoolpass").c_str(), sizeof(next.BackupPoolPassword));
+#ifndef NO_MQTT
   next.MqttEnabled = webCfgServer.hasArg("mqtt");
   if (webCfgServer.hasArg("mqhost"))
   {
@@ -285,6 +288,7 @@ static void handleSave()
     next.MqttTopic = webCfgServer.arg("mqtopic").substring(0, 64);
     next.MqttTopic.trim();
   }
+#endif
   if (webCfgServer.hasArg("tz"))
     next.Timezone = constrain(webCfgServer.arg("tz").toInt(), -12, 14);
   if (webCfgServer.hasArg("currency"))

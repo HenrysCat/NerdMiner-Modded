@@ -1010,6 +1010,9 @@ void applyPendingSettings(void) {
 // for them sparingly: once when it is opened, then once an hour while it
 // stays open. getBTCprice() / getBlockHeight() still skip the request if a
 // screen fetched within their usual period. Monitor task only.
+// -D NO_WEB_PRICE leaves the fetch out: on a board whose screens never fetch
+// anything (T-QT), it would link the HTTPS/TLS stack (~127 KB) into an app
+// partition that has no room for it.
 // ---------------------------------------------------------------------------
 #define WEB_PRICE_REFRESH_ms (60UL * 60 * 1000) // while the page stays open
 #define WEB_WATCHED_ms (60UL * 1000)            // no poll for this long: closed
@@ -1040,6 +1043,8 @@ void webMonitorDataTick(void)
     if (!due)
         return;
     lastWebFetch = now;
+#ifndef NO_WEB_PRICE
     getBTCprice();
     getBlockHeight();
+#endif
 }
