@@ -42,6 +42,22 @@ static bool checkAuth()
   return true;
 }
 
+// A form posted from another site still carries the Basic auth the browser
+// has cached for this page, so /save only takes requests whose Origin (or,
+// without one, Referer) is this device. Browsers send Origin with every POST;
+// a request with neither header (curl, scripts) is let through.
+static bool sameOrigin()
+{
+  const String self = "http://" + webCfgServer.hostHeader();
+  const String origin = webCfgServer.header("Origin");
+  if (origin.length())
+    return origin.equalsIgnoreCase(self);
+  const String referer = webCfgServer.header("Referer");
+  if (referer.length())
+    return referer.equalsIgnoreCase(self) || referer.startsWith(self + "/");
+  return true;
+}
+
 static String htmlEscape(const String &in)
 {
   String out = in;
@@ -49,6 +65,7 @@ static String htmlEscape(const String &in)
   out.replace("\"", "&quot;");
   out.replace("<", "&lt;");
   out.replace(">", "&gt;");
+  out.replace("'", "&#39;"); // the page puts every value between single quotes
   return out;
 }
 
@@ -95,8 +112,12 @@ static void handleRoot()
              "label{display:block;margin-top:1em;font-weight:bold}"
              "input[type=text],input[type=number],input[type=password],select{width:100%;padding:.4em;box-sizing:border-box}"
              "input[type=submit]{margin-top:1.5em;padding:.6em 1.2em}</style></head><body>"
-             "<h2>NerdMiner Settings</h2>"
-             "<form method='POST' action='/save'>");
+             "<h2>NerdMiner Settings</h2>");
+  if (Settings.WebPassword == DEFAULT_WEBPASSWORD)
+    page += F("<p style='background:#fff3cd;color:#664d03;padding:.6em;border-radius:4px'>"
+              "This page still uses the default password, the same on every NerdMiner: "
+              "set your own at the bottom of the page.</p>");
+  page += F("<form method='POST' action='/save'>");
 
   page += "<label>Pool URL</label><input type='text' name='pool' value='" + htmlEscape(Settings.PoolAddress) + "'>";
   page += "<label>Pool Port</label><input type='number' name='port' value='" + String(Settings.PoolPort) + "'>";
@@ -194,7 +215,11 @@ static void handleRoot()
   page += "<label>Broker address (IP or name)</label><input type='text' name='mqhost' maxlength='64' value='" + htmlEscape(Settings.MqttHost) + "'>";
   page += "<label>Broker port</label><input type='number' name='mqport' min='1' max='65535' value='" + String(Settings.MqttPort) + "'>";
   page += "<label>User (optional)</label><input type='text' name='mquser' maxlength='64' autocomplete='off' value='" + htmlEscape(Settings.MqttUser) + "'>";
-  page += "<label>Password (optional)</label><input type='password' name='mqpass' maxlength='64' autocomplete='off' value='" + htmlEscape(Settings.MqttPass) + "'>";
+  // The saved password is never sent back to the browser: empty keeps it.
+  page += String("<label>Password (optional)</label><input type='password' name='mqpass' maxlength='64' autocomplete='new-password' placeholder='") +
+          (Settings.MqttPass.length() ? "saved, leave empty to keep it" : "none") + "'>";
+  if (Settings.MqttPass.length())
+    page += F("<label><input type='checkbox' name='mqpassclear'> Remove the saved password</label>");
   page += "<label>Topic (empty: nerdminer/ and the end of the MAC address)</label><input type='text' name='mqtopic' maxlength='64' value='" + htmlEscape(Settings.MqttTopic) + "'>";
   page += String("<p><small>") + (mqttConnected() ? "Connected to the broker." : Settings.MqttEnabled ? "Not connected to the broker." : "Off.") +
           " Home Assistant finds the sensors by itself (MQTT discovery).</small></p>";
@@ -225,6 +250,11 @@ static void handleSave()
 {
   if (!checkAuth())
     return;
+  if (!sameOrigin())
+  {
+    webCfgServer.send(403, "text/plain", "Refused: the form was not sent from this miner's own settings page.");
+    return;
+  }
 
   // The form goes into a copy. Most of it is then applied live, each part by
   // the task that reads it; only invert/flip still need a restart (they are
@@ -252,13 +282,20 @@ static void handleSave()
   }
 
   if (webCfgServer.hasArg("pool"))
+  {
     next.PoolAddress = webCfgServer.arg("pool");
+    next.PoolAddress.trim(); // a pasted address often ends with a space or a newline
+  }
   if (webCfgServer.hasArg("port"))
     next.PoolPort = constrain(webCfgServer.arg("port").toInt(), 0, 65535); // like bport
   if (webCfgServer.hasArg("poolpass"))
-    strncpy(next.PoolPassword, webCfgServer.arg("poolpass").c_str(), sizeof(next.PoolPassword) - 1);
+    strlcpy(next.PoolPassword, webCfgServer.arg("poolpass").c_str(), sizeof(next.PoolPassword));
   if (webCfgServer.hasArg("wallet"))
-    strncpy(next.BtcWallet, webCfgServer.arg("wallet").c_str(), sizeof(next.BtcWallet) - 1);
+  {
+    String wallet = webCfgServer.arg("wallet");
+    wallet.trim();
+    strlcpy(next.BtcWallet, wallet.c_str(), sizeof(next.BtcWallet));
+  }
   if (webCfgServer.hasArg("bpool"))
   {
     next.BackupPoolAddress = webCfgServer.arg("bpool");
@@ -278,7 +315,9 @@ static void handleSave()
     next.MqttPort = constrain(webCfgServer.arg("mqport").toInt(), 1, 65535);
   if (webCfgServer.hasArg("mquser"))
     next.MqttUser = webCfgServer.arg("mquser").substring(0, 64);
-  if (webCfgServer.hasArg("mqpass"))
+  if (webCfgServer.hasArg("mqpassclear"))
+    next.MqttPass = "";
+  else if (webCfgServer.arg("mqpass").length()) // empty: keep the saved one
     next.MqttPass = webCfgServer.arg("mqpass").substring(0, 64);
   if (webCfgServer.hasArg("mqtopic"))
   {
@@ -427,7 +466,9 @@ static void handleSave()
 
 // Miner state as JSON for Home Assistant, scripts and dashboards. No login:
 // it is read-only and holds nothing the screen doesn't show, and no wallet
-// address or passwords.
+// address or passwords. No CORS header either: Home Assistant and scripts
+// don't need one, and with it any web page open on a computer of the network
+// could read the SSID, the local IP and the pool.
 extern uint32_t templates, hashes, Mhashes;
 extern uint64_t upTime;
 extern volatile uint32_t shares, valids;
@@ -506,7 +547,6 @@ static void handleStatus()
   fillMinerStatusJson(doc);
   String out;
   serializeJson(doc, out);
-  webCfgServer.sendHeader("Access-Control-Allow-Origin", "*");
   webCfgServer.sendHeader("Cache-Control", "no-store");
   webCfgServer.send(200, "application/json", out);
 }
@@ -548,7 +588,6 @@ static void handleHistory()
     out += v % 10;
   }
   out += F("]}");
-  webCfgServer.sendHeader("Access-Control-Allow-Origin", "*");
   webCfgServer.sendHeader("Cache-Control", "no-store");
   webCfgServer.send(200, "application/json", out);
 }
@@ -564,6 +603,8 @@ void setup_webConfig(void)
   if (webCfgStarted)
     return;
 
+  static const char *kHeaders[] = {"Origin", "Referer"}; // read by sameOrigin()
+  webCfgServer.collectHeaders(kHeaders, 2);
   webCfgServer.on("/", HTTP_GET, handleMonitor);            // live monitor, no login
   webCfgServer.on("/settings", HTTP_GET, handleRoot);        // settings, login
   webCfgServer.on("/save", HTTP_POST, handleSave);
