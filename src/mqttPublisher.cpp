@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <ArduinoJson.h>
 #include <mqtt_client.h>
+#include <esp_idf_version.h>
 #include "mqttPublisher.h"
 #include "webConfig.h"
 #include "version.h"
@@ -24,6 +25,27 @@ static uint32_t s_lastPublish = 0;
 static String s_uri, s_user, s_pass, s_clientId, s_base, s_availTopic, s_node;
 
 void mqttSettingsChanged(void) { s_restart = true; }
+
+String mqttCleanHost(const String &in, int &port)
+{
+  String h = in;
+  h.trim();
+  const int scheme = h.indexOf("://"); // mqtt://, tcp://; mqtts:// would need TLS, not supported
+  if (scheme >= 0)
+    h = h.substring(scheme + 3);
+  const int slash = h.indexOf('/');
+  if (slash >= 0)
+    h = h.substring(0, slash);
+  const int colon = h.lastIndexOf(':');
+  if (colon > 0 && h.indexOf(':') == colon) // host:port (an IPv6 address has several ':')
+  {
+    const long p = h.substring(colon + 1).toInt();
+    if (p > 0 && p < 65536)
+      port = (int)p;
+    h = h.substring(0, colon);
+  }
+  return h;
+}
 bool mqttConnected(void) { return s_client && s_connected; }
 
 static void onMqttEvent(void *, esp_event_base_t, int32_t id, void *)
@@ -51,8 +73,11 @@ static void stopClient()
     // A clean disconnect doesn't trigger the last will: say "offline" before
     // going, or Home Assistant keeps showing the miner as available (with its
     // last values) after MQTT is switched off or moved to another broker.
+    // publish() has written it to the socket when it returns, and the
+    // DISCONNECT that follows on the same connection reaches the broker after
+    // it: no need to hold the loop up with a delay.
     esp_mqtt_client_publish(s_client, s_availTopic.c_str(), "offline", 0, 1, 1);
-    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_mqtt_client_disconnect(s_client);
   }
   esp_mqtt_client_stop(s_client);
   esp_mqtt_client_destroy(s_client);
@@ -79,12 +104,28 @@ static void startClient()
   if (s_base.isEmpty())
     s_base = "nerdminer/" + s_node.substring(10); // nerdminer/<last 3 MAC bytes>
   s_availTopic = s_base + "/status";
-  s_uri = "mqtt://" + Settings.MqttHost + ":" + String(Settings.MqttPort);
+  int port = Settings.MqttPort;
+  const String host = mqttCleanHost(Settings.MqttHost, port); // also for a value saved before the page cleaned it
+  s_uri = "mqtt://" + host + ":" + String(port);
   s_user = Settings.MqttUser;
   s_pass = Settings.MqttPass;
   s_clientId = s_node;
 
   esp_mqtt_client_config_t cfg = {};
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+  // ESP-IDF 5 (Arduino core 3) groups the fields
+  cfg.broker.address.uri = s_uri.c_str();
+  cfg.credentials.client_id = s_clientId.c_str();
+  if (s_user.length())
+    cfg.credentials.username = s_user.c_str();
+  if (s_pass.length())
+    cfg.credentials.authentication.password = s_pass.c_str();
+  cfg.session.last_will.topic = s_availTopic.c_str(); // the broker says "offline" for us if we vanish
+  cfg.session.last_will.msg = "offline";
+  cfg.session.last_will.qos = 1;
+  cfg.session.last_will.retain = 1;
+  cfg.session.keepalive = 60;
+#else
   cfg.uri = s_uri.c_str();
   cfg.client_id = s_clientId.c_str();
   if (s_user.length())
@@ -96,6 +137,7 @@ static void startClient()
   cfg.lwt_qos = 1;
   cfg.lwt_retain = 1;
   cfg.keepalive = 60;
+#endif
   s_client = esp_mqtt_client_init(&cfg);
   if (!s_client)
   {
@@ -119,7 +161,9 @@ static void announceSensor(const char *key, const char *name, const char *tpl, c
   DynamicJsonDocument d(1024);
   d["name"] = name;
   d["uniq_id"] = s_node + "_" + key;
-  d["obj_id"] = s_node + "_" + key;
+  // Home Assistant deprecated object_id (obj_id) for default_entity_id, a
+  // full entity id; versions that don't know the key just ignore it.
+  d["default_entity_id"] = "sensor." + s_node + "_" + key;
   d["stat_t"] = s_base + "/state";
   d["val_tpl"] = tpl;
   d["avty_t"] = s_availTopic;

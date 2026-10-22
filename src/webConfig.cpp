@@ -222,7 +222,7 @@ static void handleRoot()
     page += F("<label><input type='checkbox' name='mqpassclear'> Remove the saved password</label>");
   page += "<label>Topic (empty: nerdminer/ and the end of the MAC address)</label><input type='text' name='mqtopic' maxlength='64' value='" + htmlEscape(Settings.MqttTopic) + "'>";
   page += String("<p><small>") + (mqttConnected() ? "Connected to the broker." : Settings.MqttEnabled ? "Not connected to the broker." : "Off.") +
-          " Home Assistant finds the sensors by itself (MQTT discovery).</small></p>";
+          " Home Assistant finds the sensors by itself (MQTT discovery). Plain MQTT only (usually port 1883), no TLS.</small></p>";
   page += F("<label>New password for this page (leave empty to keep it)</label>"
             "<input type='password' name='webpass' maxlength='63' autocomplete='new-password'>"
             "<label>New password again</label>"
@@ -306,13 +306,10 @@ static void handleSave()
   if (webCfgServer.hasArg("bpoolpass"))
     strlcpy(next.BackupPoolPassword, webCfgServer.arg("bpoolpass").c_str(), sizeof(next.BackupPoolPassword));
   next.MqttEnabled = webCfgServer.hasArg("mqtt");
-  if (webCfgServer.hasArg("mqhost"))
-  {
-    next.MqttHost = webCfgServer.arg("mqhost").substring(0, 64);
-    next.MqttHost.trim();
-  }
   if (webCfgServer.hasArg("mqport"))
     next.MqttPort = constrain(webCfgServer.arg("mqport").toInt(), 1, 65535);
+  if (webCfgServer.hasArg("mqhost")) // after the port: "host:1884" overrides it
+    next.MqttHost = mqttCleanHost(webCfgServer.arg("mqhost").substring(0, 64), next.MqttPort);
   if (webCfgServer.hasArg("mquser"))
     next.MqttUser = webCfgServer.arg("mquser").substring(0, 64);
   if (webCfgServer.hasArg("mqpassclear"))
