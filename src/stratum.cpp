@@ -58,6 +58,23 @@ static bool isHex(const String &s)
     return true;
 }
 
+// Only the envelope of a message (method, id, error, result) goes into the
+// shared document: a mining.notify bigger than BUFFER_JSON_DOC made the full
+// parse fail with NoMemory, the message was taken for an error and dropped
+// without a word, and the miner kept hashing the old job.
+static DeserializationError parseEnvelope(const String &line)
+{
+    static StaticJsonDocument<128> filter;
+    if (filter.isNull())
+    {
+        filter["method"] = true;
+        filter["id"] = true;
+        filter["error"] = true;
+        filter["result"] = true;
+    }
+    return deserializeJson(doc, line, DeserializationOption::Filter(filter));
+}
+
 //Verify Payload doesn't has zero lenght
 bool verifyPayload (String* line){
   if(line->length() == 0) return false;
@@ -69,7 +86,7 @@ bool verifyPayload (String* line){
 
 // Pools send the error either as [code, "message", data] or as {"code":..,"message":..}.
 // A missing field must not reach %s as NULL: that was a LoadProhibited reboot (issue #4).
-bool checkError(const StaticJsonDocument<BUFFER_JSON_DOC>& doc) {
+bool checkError(const JsonDocument& doc) {
 
   if (!doc.containsKey("error")) return false;
 
@@ -150,7 +167,20 @@ bool parse_mining_subscribe(String line, mining_subscribe& mSubscribe)
 
     mSubscribe.sub_details = String((const char*) doc["result"][0][0][1]);
     mSubscribe.extranonce1 = String((const char*) doc["result"][1]);
-    mSubscribe.extranonce2_size = doc["result"][2];
+    mSubscribe.extranonce2_size = doc["result"][2] | 0;
+
+    // Both end up in the coinbase: a bad value meant every share rejected
+    // (extranonce2_size used to fall back to 4 without a word).
+    if (mSubscribe.extranonce1.isEmpty() || (mSubscribe.extranonce1.length() & 1) || !isHex(mSubscribe.extranonce1))
+    {
+        Serial.printf("    subscribe refused: bad extranonce1 \"%s\"\n", mSubscribe.extranonce1.c_str());
+        return false;
+    }
+    if (mSubscribe.extranonce2_size < 1 || mSubscribe.extranonce2_size > MAX_EXTRANONCE2_SIZE)
+    {
+        Serial.printf("    subscribe refused: extranonce2_size %d (1 to %d)\n", mSubscribe.extranonce2_size, MAX_EXTRANONCE2_SIZE);
+        return false;
+    }
 
     return true;
 }
@@ -197,9 +227,12 @@ stratum_method parse_mining_method(String line)
     if(!verifyPayload(&line)) return STRATUM_PARSE_ERROR;
     Serial.print("  Receiving: "); Serial.println(line);
     
-    DeserializationError error = deserializeJson(doc, line);
-
-    if (error || checkError(doc)) return STRATUM_PARSE_ERROR;
+    DeserializationError error = parseEnvelope(line);
+    if (error) {
+      Serial.printf("    not parsed (%u bytes): %s\n", line.length(), error.c_str());
+      return STRATUM_PARSE_ERROR;
+    }
+    if (checkError(doc)) return STRATUM_PARSE_ERROR;
 
     if (!doc.containsKey("method")) {
       // A reply. checkError() above already caught a real error, so what is
@@ -223,25 +256,44 @@ bool parse_mining_notify(String line, mining_job& mJob)
 {
     Serial.println("    Parsing Method [MINING NOTIFY]");
     if(!verifyPayload(&line)) return false;
-   
-    DeserializationError error = deserializeJson(doc, line);
+
+    if (line.length() > MAX_NOTIFY_LEN) {
+      Serial.printf("    mining.notify refused: %u bytes (max %u)\n", line.length(), (unsigned)MAX_NOTIFY_LEN);
+      return false;
+    }
+    // A document of its own, sized from the message: the strings are copied
+    // in (about the length of the line) plus the slots of the params array
+    // and the merkle branch. The shared 4 KB one was too small for big
+    // coinbases.
+    DynamicJsonDocument job(line.length() + JSON_OBJECT_SIZE(4) + JSON_ARRAY_SIZE(16) +
+                            JSON_ARRAY_SIZE(MAX_MERKLE_BRANCHES) + 256);
+    if (job.capacity() == 0) {
+      Serial.printf("    mining.notify not parsed (%u bytes): out of memory\n", line.length());
+      return false;
+    }
+    DeserializationError error = deserializeJson(job, line);
 
     if (error) {
-      // NoMemory: the job is bigger than BUFFER_JSON_DOC (huge coinbase)
       Serial.printf("    mining.notify not parsed (%u bytes): %s\n", line.length(), error.c_str());
       return false;
     }
-    if (!doc.containsKey("params")) return false;
+    if (!job.containsKey("params")) return false;
+    if (checkError(job)) {
+      Serial.printf("[WORKER] >>>>>>>>> Work aborted\n");
+      return false;
+    }
 
-    mJob.job_id = String((const char*) doc["params"][0]);
-    mJob.prev_block_hash = String((const char*) doc["params"][1]);
-    mJob.coinb1 = String((const char*) doc["params"][2]);
-    mJob.coinb2 = String((const char*) doc["params"][3]);
-    mJob.merkle_branch = doc["params"][4];
-    mJob.version = String((const char*) doc["params"][5]);
-    mJob.nbits = String((const char*) doc["params"][6]);
-    mJob.ntime = String((const char*) doc["params"][7]);
-    mJob.clean_jobs = doc["params"][8]; //bool
+    JsonArrayConst params = job["params"];
+    JsonArrayConst branch = params[4];
+    mJob.job_id = String((const char*) params[0]);
+    mJob.prev_block_hash = String((const char*) params[1]);
+    mJob.coinb1 = String((const char*) params[2]);
+    mJob.coinb2 = String((const char*) params[3]);
+    mJob.version = String((const char*) params[5]);
+    mJob.nbits = String((const char*) params[6]);
+    mJob.ntime = String((const char*) params[7]);
+    mJob.clean_jobs = params[8] | false;
+    mJob.merkle_branch.clear();
 
     // Sizes the header code relies on (calculateMiningData copies them into
     // fixed buffers): a malformed job is refused instead of overflowing them.
@@ -255,9 +307,9 @@ bool parse_mining_notify(String line, mining_job& mJob)
       else if (nbitsExp < 5 || nbitsExp > 0x20) bad = "nbits";
       else if (mJob.ntime.length() != 8 || !isHex(mJob.ntime)) bad = "ntime";
       else if ((mJob.coinb1.length() | mJob.coinb2.length()) & 1 || !isHex(mJob.coinb1) || !isHex(mJob.coinb2)) bad = "coinbase";
-      else if (mJob.merkle_branch.isNull() || mJob.merkle_branch.size() > 32) bad = "merkle_branch";
+      else if (branch.isNull() || branch.size() > MAX_MERKLE_BRANCHES) bad = "merkle_branch";
       else
-        for (JsonVariant m : mJob.merkle_branch)
+        for (JsonVariantConst m : branch)
         {
           const char *h = m.as<const char *>();
           if (!h || strlen(h) != 64 || !isHex(String(h))) { bad = "merkle_branch"; break; }
@@ -268,6 +320,10 @@ bool parse_mining_notify(String line, mining_job& mJob)
         return false;
       }
     }
+    // Copied out: the document goes away with this function.
+    mJob.merkle_branch.reserve(branch.size());
+    for (JsonVariantConst m : branch)
+      mJob.merkle_branch.push_back(String(m.as<const char *>()));
 
     #ifdef DEBUG_MINING
     Serial.print("    job_id: "); Serial.println(mJob.job_id);
@@ -280,11 +336,6 @@ bool parse_mining_notify(String line, mining_job& mJob)
     Serial.print("    ntime: "); Serial.println(mJob.ntime);
     Serial.print("    clean_jobs: "); Serial.println(mJob.clean_jobs);
     #endif
-    //Check if parameters where correctly received
-    if (checkError(doc)) {
-      Serial.printf("[WORKER] >>>>>>>>> Work aborted\n"); 
-      return false;
-    }
     return true;
 }
 
@@ -353,7 +404,7 @@ bool tx_suggest_difficulty(WiFiClient& client, double difficulty)
 
 unsigned long parse_extract_id(const String &line)
 {
-    DeserializationError error = deserializeJson(doc, line);
+    DeserializationError error = parseEnvelope(line);
     if (error)
         return 0;
     
@@ -368,7 +419,7 @@ unsigned long parse_extract_id(const String &line)
 // A reply's "result": true when the pool accepted the submitted share.
 bool parse_extract_result(const String &line)
 {
-    if (deserializeJson(doc, line))
+    if (parseEnvelope(line))
         return false;
     return doc["result"] | false;
 }
