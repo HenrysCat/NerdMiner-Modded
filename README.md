@@ -99,6 +99,14 @@ Every time an stratum job notification is received miner update its current work
 
 \*Affiliate links
 
+### Flash from the browser
+
+The GitHub Actions workflow (`.github/workflows/firmware.yml`) builds every board on each push and pull request. On `main` and on `v*` tags it also publishes a web flasher on the repository's GitHub Pages: pick the board, click **Connect & install**, done, from Chrome or Edge on a computer, without PlatformIO. A `v*` tag also makes a GitHub release with each board's `_factory.bin` (whole flash, from 0x0) and `_firmware.bin` (app only, for an update).
+
+One-time setup for the repository owner: **Settings > Pages > Source: GitHub Actions**.
+
+The packing (`tools/webflasher/pack.py`) takes the chip from the bootloader and the app address from the partition table, so a board with its own partition table needs no change there.
+
 ### Flash firmware
 
 > **Flashing NerdMiner Modded:** use the web flasher at **https://henryscat.github.io/NerdMiner-Modded/** (Chrome, Edge or Brave). It offers a *full install* (factory image: bootloader, partition table and firmware, for a first flash) and a *firmware-only update* (keeps your settings). Pick your board there first: the 2.8" CYD (ESP32-2432S028R), the 4.0" CYD (320x480 ST7796) or the ESP32-WROOM-32 without a screen. You can also build and flash this repository with PlatformIO, e.g. `pio run -e ESP32-2432S028R -t upload` for the 2.8" board, `pio run -e ESP32-4in-ST7796 -t upload` for the 4.0" one or `pio run -e ESP32-WROOM-Headless -t upload` for the screenless board.
