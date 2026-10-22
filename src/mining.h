@@ -131,6 +131,9 @@ struct MinerStatus
   int8_t authorized;    // mining.authorize answer: -1 none yet, 0 refused, 1 accepted
 };
 MinerStatus getMinerStatus(void);
+// mining.authorize answer for the current connection: -1 none yet, 0 the pool
+// refused the wallet/worker, 1 accepted (screens show a warning on 0).
+int8_t poolAuthorized(void);
 
 void runMiner(void *name);
 
