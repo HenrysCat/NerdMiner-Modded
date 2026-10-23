@@ -41,8 +41,11 @@ String readCustomAPName() {
     
     // Leer directamente desde flash
     const size_t DATA_SIZE = 128;
-    uint8_t buffer[DATA_SIZE];
-    memset(buffer, 0, DATA_SIZE); // Clear buffer
+    // One byte more than is read, left at 0: the flash holds no terminator.
+    // On huge_app boards 0x3F0000 is the (erased, all 0xFF) coredump
+    // partition, and String() below ran on past the buffer into the stack.
+    uint8_t buffer[DATA_SIZE + 1];
+    memset(buffer, 0, sizeof(buffer));
     
     // Leer desde 0x3F0000
     esp_err_t result = esp_flash_read(NULL, buffer, 0x3F0000, DATA_SIZE);
@@ -52,6 +55,10 @@ String readCustomAPName() {
     }
     
     Serial.println("DEBUG: Successfully read from flash");
+    if (buffer[0] == 0xFF) {
+        Serial.println("DEBUG: Flash erased there - no custom config");
+        return "";
+    }
     String data = String((char*)buffer);
     
     // Debug: show raw data read
@@ -244,7 +251,10 @@ void init_WifiManager()
   }
   WiFiManagerParameter save_stats_to_nvs("SaveStatsToNVS", "Save mining statistics to flash memory.", "T", 2, checkboxParams, WFM_LABEL_AFTER);
   // Text box (String) - 80 characters maximum
-  WiFiManagerParameter password_text_box("Poolpassword - Optional", "Pool password", Settings.PoolPassword, 80);
+  // WiFiManager refuses an ID with anything but letters, digits and '_' ("parameter IDs
+  // can only contain alpha numeric chars"): with "Poolpassword - Optional" the
+  // field was never added, and the setup portal had no pool password.
+  WiFiManagerParameter password_text_box("Poolpassword", "Pool password (optional)", Settings.PoolPassword, 80);
 
   // Add all defined parameters
   wm.addParameter(&pool_text_box);
@@ -279,6 +289,26 @@ void init_WifiManager()
     wm.addParameter(&brightness_text_box_num);
   #endif
 
+    // Copies the portal's fields into Settings. Only when its form was sent
+    // (shouldSaveConfig): each field is cut to its maximum length (80), and
+    // copying them back on every boot shortened a longer pool address set on
+    // the LAN settings page. One place for it also means "Save mining
+    // statistics" now counts after a setup that connects (it was only read
+    // when the connection failed).
+    auto applyPortalValues = [&]() {
+        Settings.PoolAddress = pool_text_box.getValue();
+        Settings.PoolPort = atoi(port_text_box_num.getValue());
+        strlcpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword));
+        strlcpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet));
+        Settings.Timezone = atoi(time_text_box_num.getValue());
+        Settings.saveStats = (strncmp(save_stats_to_nvs.getValue(), "T", 1) == 0);
+        #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
+        Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
+        Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
+        Settings.Brightness = atoi(brightness_text_box_num.getValue());
+        #endif
+    };
+
     Serial.println("AllDone: ");
     if (forceConfig)    
     {
@@ -293,20 +323,7 @@ void init_WifiManager()
         {
             //Could be break forced after edditing, so save new config
             Serial.println("failed to connect and hit timeout");
-            Settings.PoolAddress = pool_text_box.getValue();
-            Settings.PoolPort = atoi(port_text_box_num.getValue());
-            strlcpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword)); // strncpy left no terminator on an 80-char entry
-            strlcpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet)); // strncpy left no terminator on an 80-char entry
-            Settings.Timezone = atoi(time_text_box_num.getValue());
-            //Serial.println(save_stats_to_nvs.getValue());
-            Settings.saveStats = (strncmp(save_stats_to_nvs.getValue(), "T", 1) == 0);
-            #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
-                Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
-                Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
-            #endif
-            #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
-                Settings.Brightness = atoi(brightness_text_box_num.getValue());
-            #endif
+            applyPortalValues();
             nvMem.saveConfig(&Settings);
             delay(3*SECOND_MS);
             //reset and try again, or maybe put it to deep sleep
@@ -326,21 +343,7 @@ void init_WifiManager()
         {
             Serial.println("Failed to connect to configured WIFI, and hit timeout");
             if (shouldSaveConfig) {
-                // Save new config            
-                Settings.PoolAddress = pool_text_box.getValue();
-                Settings.PoolPort = atoi(port_text_box_num.getValue());
-                strlcpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword)); // strncpy left no terminator on an 80-char entry
-                strlcpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet)); // strncpy left no terminator on an 80-char entry
-                Settings.Timezone = atoi(time_text_box_num.getValue());
-                // Serial.println(save_stats_to_nvs.getValue());
-                Settings.saveStats = (strncmp(save_stats_to_nvs.getValue(), "T", 1) == 0);
-                #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
-                Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
-                Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
-                #endif
-                #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
-                Settings.Brightness = atoi(brightness_text_box_num.getValue());
-                #endif
+                applyPortalValues();
                 nvMem.saveConfig(&Settings);
                 vTaskDelay(2000 / portTICK_PERIOD_MS);      
             }        
@@ -357,88 +360,28 @@ void init_WifiManager()
         Serial.println(WiFi.localIP());
 
 
-        // Lets deal with the user config values
-
-        // Copy the string value
-        Settings.PoolAddress = pool_text_box.getValue();
-        //strncpy(Settings.PoolAddress, pool_text_box.getValue(), sizeof(Settings.PoolAddress));
-        Serial.print("PoolString: ");
-        Serial.println(Settings.PoolAddress);
-
-        //Convert the number value
-        Settings.PoolPort = atoi(port_text_box_num.getValue());
-        Serial.print("portNumber: ");
-        Serial.println(Settings.PoolPort);
-
-        // Copy the string value
-        strlcpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword)); // strncpy left no terminator on an 80-char entry
-        Serial.print("poolPassword: ");
-        Serial.println(Settings.PoolPassword);
-
-        // Copy the string value
-        strlcpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet)); // strncpy left no terminator on an 80-char entry
-        Serial.print("btcString: ");
-        Serial.println(Settings.BtcWallet);
-
-        //Convert the number value
-        Settings.Timezone = atoi(time_text_box_num.getValue());
-        Serial.print("TimeZone fromUTC: ");
-        Serial.println(Settings.Timezone);
-
-        #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
-        // Only when the portal form was submitted: an unused checkbox still
-        // holds its "T", which would turn the saved setting on in memory (the
-        // LAN settings page then showed and compared against the wrong value).
-        if (shouldSaveConfig) Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
-        if (shouldSaveConfig) Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
-        Serial.print("Invert Colors: ");
-        Serial.println(Settings.invertColors);
-        #endif
-
-        #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
-        Settings.Brightness = atoi(brightness_text_box_num.getValue());
-        Serial.print("Brightness: ");
-        Serial.println(Settings.Brightness);
-        #endif
-
         // Always-on LAN settings page -- lets the user change pool/wallet/etc.
         // later without re-entering the device's own setup AP.
         setup_webConfig();
     }
 
-    // Lets deal with the user config values
-
-    // Copy the string value
-    Settings.PoolAddress = pool_text_box.getValue();
-    //strncpy(Settings.PoolAddress, pool_text_box.getValue(), sizeof(Settings.PoolAddress));
+    if (shouldSaveConfig)
+        applyPortalValues();
     Serial.print("PoolString: ");
     Serial.println(Settings.PoolAddress);
-
-    //Convert the number value
-    Settings.PoolPort = atoi(port_text_box_num.getValue());
     Serial.print("portNumber: ");
     Serial.println(Settings.PoolPort);
-
-    // Copy the string value
-    strlcpy(Settings.PoolPassword, password_text_box.getValue(), sizeof(Settings.PoolPassword)); // strncpy left no terminator on an 80-char entry
     Serial.print("poolPassword: ");
-    Serial.println(Settings.PoolPassword);
-
-    // Copy the string value
-    strlcpy(Settings.BtcWallet, addr_text_box.getValue(), sizeof(Settings.BtcWallet)); // strncpy left no terminator on an 80-char entry
+    Serial.println(Settings.PoolPassword[0] ? "(set)" : "(empty)");
     Serial.print("btcString: ");
     Serial.println(Settings.BtcWallet);
-
-    //Convert the number value
-    Settings.Timezone = atoi(time_text_box_num.getValue());
     Serial.print("TimeZone fromUTC: ");
     Serial.println(Settings.Timezone);
-
-    #ifdef ESP32_2432S028R
-    if (shouldSaveConfig) Settings.invertColors = (strncmp(invertColors.getValue(), "T", 1) == 0);
-    if (shouldSaveConfig) Settings.flipDisplay = (strncmp(flipDisplay.getValue(), "T", 1) == 0);
+    #if defined(ESP32_2432S028R) || defined(ESP32_2432S028_2USB)
     Serial.print("Invert Colors: ");
     Serial.println(Settings.invertColors);
+    Serial.print("Brightness: ");
+    Serial.println(Settings.Brightness);
     #endif
 
     // Save the custom parameters to FS

@@ -93,7 +93,6 @@ struct HwShaRequest
 // (classic ESP32 / D0WD, e.g. CYD boards) when HARDWARE_SHA265 is active.
 //#define PIPELINED_ASM_MINING
 
-#define TARGET_BUFFER_SIZE 64
 
 void runMonitor(void *name);
 
@@ -144,12 +143,12 @@ String printLocalTime(void);
 
 void resetStat();
 void updateBestDiff(double diff); // keep the best hash difficulty seen (any core)
+void addHashes(uint32_t n);        // stratum task: hashes the miners report
+uint64_t getTotalHashes();         // since the saved stats began; any task
 double getBestDiff();
 void saveStat();   // write the stats to NVS now (before a planned restart / power off)
 
 typedef struct{
-  uint8_t bytearray_target[32];
-  uint8_t bytearray_pooltarget[32];
   uint8_t merkle_result[32];
   uint8_t bytearray_blockheader[128];
   bool valid; // false: the job could not be prepared (see calculateMiningData)

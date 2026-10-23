@@ -4,3 +4,7 @@
 #include "../../src/stratum.cpp"
 #include "../../src/utils.cpp"
 #include "../../src/ShaTests/nerdSHA256plus.cpp"
+// The settings file (config save / load). It includes the board header: any
+// board will do for these tests, this one has no screen to stub out.
+#define DEVKITV1
+#include "../../src/drivers/storage/nvMemory.cpp"

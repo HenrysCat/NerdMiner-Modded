@@ -2,9 +2,11 @@
 #include "Arduino.h"
 #include "esp_timer.h"
 #include "mbedtls/sha256.h"
+#include "SPIFFS.h"
 #include <chrono>
 
 HostSerial Serial;
+FakeSPIFFS SPIFFS;
 
 unsigned long millis()
 {

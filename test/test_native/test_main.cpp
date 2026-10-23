@@ -9,6 +9,10 @@
 #include "ShaTests/nerdSHA256plus.h"
 #include "mbedtls/sha256.h"
 #include "vectors.h"
+#include "submitFilter.h"
+#include "SPIFFS.h"
+#define DEVKITV1 // any board: nvMemory.h includes the board header (see sources.cpp)
+#include "drivers/storage/nvMemory.h"
 
 void setUp() {}
 void tearDown() {}
@@ -324,6 +328,131 @@ static void test_sha256d_baked_matches_reference()
   TEST_ASSERT_TRUE(passes > 0);
 }
 
+// ----------------------------------------------------------- submit filter --
+
+static void test_submit_filter()
+{
+  SubmitFilter f;
+  TEST_ASSERT_TRUE(f.firstTime(7, 0x1234));
+  TEST_ASSERT_FALSE(f.firstTime(7, 0x1234)); // found by both miners: sent once
+  TEST_ASSERT_TRUE(f.firstTime(7, 0x1235));
+  TEST_ASSERT_TRUE(f.firstTime(8, 0x1234));  // new job, new header: a new share
+  TEST_ASSERT_TRUE(f.firstTime(8, 0x1235));  // nothing carried over from job 7
+  // keeps the last SIZE nonces of the job
+  SubmitFilter g;
+  for (uint32_t n = 0; n < SubmitFilter::SIZE; n++)
+    TEST_ASSERT_TRUE(g.firstTime(1, n));
+  for (uint32_t n = 0; n < SubmitFilter::SIZE; n++)
+    TEST_ASSERT_FALSE(g.firstTime(1, n));
+}
+
+// ------------------------------------------------------------ config file --
+
+static TSettings sampleSettings(const char *wallet)
+{
+  TSettings s;
+  // longer than the 80 characters of the setup portal's field
+  s.PoolAddress = "stratum.a-very-long-pool-hostname-that-goes-on-and-on.example.org.subdomain.example.net";
+  s.PoolPort = 4333;
+  strlcpy(s.PoolPassword, "d=0.001,it's", sizeof(s.PoolPassword));
+  strlcpy(s.BtcWallet, wallet, sizeof(s.BtcWallet));
+  s.BackupPoolAddress = "backup.example.org";
+  s.BackupPoolPort = 3333;
+  s.WebPassword = "web'pass";
+  s.MqttEnabled = true;
+  s.MqttHost = "192.168.1.10";
+  s.MqttPass = "mq-secret";
+  s.Timezone = 2;
+  s.saveStats = true;
+  return s;
+}
+
+static void resetDisk() { fakefs::disk() = fakefs::Disk(); }
+
+static void checkLoaded(const char *wallet)
+{
+  nvMemory fresh; // as after a restart
+  TSettings t;
+  TEST_ASSERT_TRUE(fresh.loadConfig(&t));
+  TEST_ASSERT_EQUAL_STRING(wallet, t.BtcWallet);
+  TEST_ASSERT_EQUAL_STRING(sampleSettings(wallet).PoolAddress.c_str(), t.PoolAddress.c_str());
+  TEST_ASSERT_EQUAL_STRING("d=0.001,it's", t.PoolPassword);
+  TEST_ASSERT_EQUAL_STRING("web'pass", t.WebPassword.c_str());
+  TEST_ASSERT_EQUAL_STRING("mq-secret", t.MqttPass.c_str());
+  TEST_ASSERT_EQUAL_INT(4333, t.PoolPort);
+  TEST_ASSERT_TRUE(t.saveStats);
+}
+
+static void test_config_round_trip()
+{
+  resetDisk();
+  nvMemory m;
+  TSettings s = sampleSettings("bc1qfirst");
+  TEST_ASSERT_TRUE(m.saveConfig(&s));
+  TEST_ASSERT_TRUE(SPIFFS.exists(JSON_CONFIG_FILE));
+  TEST_ASSERT_FALSE(SPIFFS.exists(JSON_CONFIG_FILE ".tmp")); // renamed into place
+  checkLoaded("bc1qfirst");
+}
+
+static void test_config_full_filesystem_keeps_old()
+{
+  resetDisk();
+  nvMemory m;
+  TSettings a = sampleSettings("bc1qfirst"), b = sampleSettings("bc1qsecond");
+  TEST_ASSERT_TRUE(m.saveConfig(&a));
+  fakefs::disk().writeBudget = 40; // the new file can't be written in full
+  TEST_ASSERT_FALSE(m.saveConfig(&b));
+  fakefs::disk().writeBudget = -1;
+  TEST_ASSERT_FALSE(SPIFFS.exists(JSON_CONFIG_FILE ".tmp"));
+  checkLoaded("bc1qfirst"); // the stock code had emptied it before writing
+}
+
+static void test_config_power_cut_while_writing_keeps_old()
+{
+  resetDisk();
+  nvMemory m;
+  TSettings a = sampleSettings("bc1qfirst"), b = sampleSettings("bc1qsecond");
+  TEST_ASSERT_TRUE(m.saveConfig(&a));
+  fakefs::disk().writeBudget = 40;     // the power goes half-way through the write...
+  fakefs::disk().stepsBeforeCut = 0;   // ...so nothing after it happens
+  TEST_ASSERT_FALSE(m.saveConfig(&b));
+  fakefs::disk().powerCut = false;    // restart
+  fakefs::disk().writeBudget = -1;
+  fakefs::disk().stepsBeforeCut = -1;
+  checkLoaded("bc1qfirst"); // the half-written temporary file is ignored
+}
+
+static void test_config_power_cut_before_rename_keeps_new()
+{
+  resetDisk();
+  nvMemory m;
+  TSettings a = sampleSettings("bc1qfirst"), b = sampleSettings("bc1qsecond");
+  TEST_ASSERT_TRUE(m.saveConfig(&a));
+  fakefs::disk().stepsBeforeCut = 1; // old file removed, then the power goes
+  TEST_ASSERT_FALSE(m.saveConfig(&b));
+  TEST_ASSERT_FALSE(SPIFFS.exists(JSON_CONFIG_FILE));
+  fakefs::disk().powerCut = false; // restart
+  fakefs::disk().stepsBeforeCut = -1;
+  checkLoaded("bc1qsecond"); // the complete new file is picked up
+  TEST_ASSERT_TRUE(SPIFFS.exists(JSON_CONFIG_FILE));
+  TEST_ASSERT_FALSE(SPIFFS.exists(JSON_CONFIG_FILE ".tmp"));
+}
+
+static void test_config_delete_removes_both()
+{
+  resetDisk();
+  nvMemory m;
+  TSettings a = sampleSettings("bc1qfirst");
+  TEST_ASSERT_TRUE(m.saveConfig(&a));
+  fakefs::disk().files[JSON_CONFIG_FILE ".tmp"] = "{}";
+  m.deleteConfig();
+  TEST_ASSERT_FALSE(SPIFFS.exists(JSON_CONFIG_FILE));
+  TEST_ASSERT_FALSE(SPIFFS.exists(JSON_CONFIG_FILE ".tmp"));
+  nvMemory fresh;
+  TSettings t;
+  TEST_ASSERT_FALSE(fresh.loadConfig(&t));
+}
+
 int main(int, char **)
 {
   UNITY_BEGIN();
@@ -346,5 +475,11 @@ int main(int, char **)
   RUN_TEST(test_difficulty_of_a_hash);
   RUN_TEST(test_sha256d_baked_on_a_real_block);
   RUN_TEST(test_sha256d_baked_matches_reference);
+  RUN_TEST(test_submit_filter);
+  RUN_TEST(test_config_round_trip);
+  RUN_TEST(test_config_full_filesystem_keeps_old);
+  RUN_TEST(test_config_power_cut_while_writing_keeps_old);
+  RUN_TEST(test_config_power_cut_before_rename_keeps_new);
+  RUN_TEST(test_config_delete_removes_both);
   return UNITY_END();
 }
