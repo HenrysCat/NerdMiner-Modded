@@ -25,6 +25,19 @@
  
 //10 Jobs per second
 #define NONCE_PER_JOB_SW 4096
+// The SW and HW miners must never hash the same nonce of a job (the pool
+// refuses the second one as "Duplicate"). The pipelined HW loop searches
+// byte-swapped nonces from its own cursor, so native-space chunk ranges alone
+// don't keep it apart from the SW chunks: they split the nonce space by the
+// low byte of the native nonce instead. SW chunks only use nonces whose low
+// byte is below 0x80 (swNonce(): a 4096-nonce chunk spans 8192 natives, all
+// allocations stay multiples of 256), the pipelined HW cursor only those
+// with 0x80 and above (its top bit is set when it is seeded).
+#define SW_NONCE_SPAN (2 * NONCE_PER_JOB_SW)
+static inline uint32_t swNonce(uint32_t start, uint32_t n)
+{
+  return start + ((n >> 7) << 8) + (n & 0x7F);
+}
 // Chunk size the classic-ESP32 pipelined path re-enters C for. Bumped 16x
 // from the original 16*1024: profiling against BitsyMiner (which never
 // returns to C mid-job at all) showed the redundant per-chunk SW midstate/
@@ -787,7 +800,7 @@ void runStratumWorker(void *name) {
                                               #ifdef RANDOM_NONCE
                                               nonce_pool = RandomGet() & RANDOM_NONCE_MASK;
                                               #else
-                                              nonce_pool += NONCE_PER_JOB_SW;
+                                              nonce_pool += SW_NONCE_SPAN;
                                               #endif
                                               #endif
                                               #ifdef HARDWARE_SHA265
@@ -946,7 +959,7 @@ void runStratumWorker(void *name) {
         #ifdef RANDOM_NONCE
         nonce_pool = RandomGet() & RANDOM_NONCE_MASK;
         #else
-        nonce_pool += NONCE_PER_JOB_SW;
+        nonce_pool += SW_NONCE_SPAN;
         #endif
       }
 #endif
@@ -1047,7 +1060,7 @@ void minerWorkerSw(void * task_id)
       uint8_t job_in_work = job->id & 0xFF;
       for (uint32_t n = 0; n < job->nonce_count; ++n)
       {
-        ((uint32_t*)(job->sha_buffer+64+12))[0] = job->nonce_start+n;
+        ((uint32_t*)(job->sha_buffer+64+12))[0] = swNonce(job->nonce_start, n);
         #ifdef DEBUG_MINING
         (*myDebugCounter)++;
         #endif
@@ -1065,7 +1078,7 @@ void minerWorkerSw(void * task_id)
           if (diff_hash > result->difficulty)
           {
             result->difficulty = diff_hash;
-            result->nonce = job->nonce_start+n;
+            result->nonce = swNonce(job->nonce_start, n);
             memcpy(result->hash, hash, 32);
           }
         }
@@ -1973,7 +1986,12 @@ void minerWorkerHw(void * task_id)
           // from pipelined_swapped_cursor and reuses the cache, so chunks
           // can never overlap in the space actually being searched.
           pipelined_last_job_id = job->id;
-          pipelined_swapped_cursor = __builtin_bswap32(job->nonce_start);
+          // Top bit set: native nonces with a low byte of 0x80 and above, the
+          // half the SW miner never uses (see SW_NONCE_SPAN). Within one job
+          // the cursor can't run into the other half: that would take 2^31
+          // nonces (~36 min at 1 MH/s), and a job is replaced or the pool
+          // connection reset well before (10 min without a job).
+          pipelined_swapped_cursor = __builtin_bswap32(job->nonce_start) | 0x80000000u;
           for (int i = 0; i < 20; ++i)
             ((uint32_t *)pipelined_native_header_cache)[i] = __builtin_bswap32(((const uint32_t *)sha_buffer)[i]);
           nerd_mids(pipelined_midstate_cache, pipelined_native_header_cache);
