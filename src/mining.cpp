@@ -21,7 +21,6 @@
 #include <map>
 #include "mbedtls/sha256.h"
 #include "i2c_master.h"
-#include "submitFilter.h"
 #include <esp_timer.h>
  
 //10 Jobs per second
@@ -574,7 +573,6 @@ void runStratumWorker(void *name) {
   #endif
 
   std::map<uint32_t, std::shared_ptr<Submition>> s_submition_map;
-  SubmitFilter submitted; // see submitFilter.h
 
 #ifdef I2C_SLAVE
   std::vector<uint8_t> i2c_slave_vector;
@@ -1027,11 +1025,6 @@ void runStratumWorker(void *name) {
       {
         if (!client.connected())
           break;
-        if (!submitted.firstTime(res->id, res->nonce))
-        {
-          Serial.printf("   - Share %08lx already sent for this job (found by both miners), skipped\n", (unsigned long)res->nonce);
-          continue;
-        }
         unsigned long sumbit_id = 0;
         tx_mining_submit(client, mWorker, mJob, res->nonce, sumbit_id);
         Serial.print("   - Current diff share: "); Serial.println(res->difficulty,12);
