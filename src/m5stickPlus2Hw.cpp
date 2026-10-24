@@ -10,6 +10,7 @@
 #include "m5stickPlus2Hw.h"
 #include "timeutil.h"
 #include "drivers/devices/device.h"
+#include "mining.h"
 
 #define PLUS2_I2C_SDA 21
 #define PLUS2_I2C_SCL 22
@@ -163,6 +164,122 @@ void plus2CutPower()
   // Still running: powered by USB. Take the latch again and carry on.
   digitalWrite(PIN_POWER_HOLD, HIGH);
   gpio_hold_en((gpio_num_t)PIN_POWER_HOLD);
+}
+
+// ------------------------------------------------------- low battery ----
+// Below PLUS2_BATTERY_OFF_mV (under mining load) for 30 s in a row ->
+// message, then the power latch is released. On USB the stick keeps running
+// (the latch is taken again) and checking goes on. Readings under 2.5 V are
+// treated as a measuring problem, not as an empty cell.
+
+#define BATTERY_CHECK_ms 5000
+#define BATTERY_LOW_FOR_ms 30000
+
+void plus2BatteryGuardTick(void (*showNotice)())
+{
+#if defined(PIN_BATTERY_ADC) && PLUS2_LOW_BATTERY_OFF
+  static uint32_t lastCheck = 0, lowSince = 0;
+  if (lastCheck != 0 && millis() - lastCheck < BATTERY_CHECK_ms)
+    return;
+  lastCheck = millis();
+
+  const int mv = plus2BatteryMillivolts();
+  if (mv >= PLUS2_BATTERY_OFF_mV || mv < 2500) {
+    lowSince = 0;
+    return;
+  }
+  if (lowSince == 0) {
+    lowSince = millis();
+    Serial.printf("Battery low: %d mV\n", mv);
+    return;
+  }
+  if (millis() - lowSince < BATTERY_LOW_FOR_ms)
+    return;
+
+  Serial.printf("Battery empty (%d mV): switching off\n", mv);
+  if (showNotice) showNotice();
+  saveStat(); // before the power goes
+  delay(3000);
+  plus2CutPower(); // returns only on USB power
+  Serial.println("Still powered (USB): carrying on");
+  lowSince = 0;
+#else
+  (void)showNotice;
+#endif
+}
+
+// ------------------------------------------------- share / block signal ----
+// Red LED (GPIO19, active high) and passive buzzer (GPIO2, LEDC channel 4 =
+// timer 2, away from the backlight's channel 0 / timer 0). Driven from the
+// monitor loop (~100 ms per call), no blocking delays. 32-bit share (about
+// once an hour at ~1 MH/s): one 100 ms flash + short beep, at most every
+// 10 s. Block: 3 s of flashing with a rising beep pattern.
+
+#define BUZZER_CHANNEL 4
+#define SHARE_SIGNAL_MIN_GAP_ms 10000
+static uint32_t s_seenShares = 0, s_seenBlocks = 0;
+static bool s_signalInit = false;
+static int s_signalSteps = 0;   // ~100 ms steps left in the current pattern
+static bool s_blockPattern = false;
+static uint32_t s_lastShareSignal = 0;
+
+static void buzzer(uint32_t freq)
+{
+#if SHARE_BEEP
+  if (freq) ledcWriteTone(BUZZER_CHANNEL, freq);
+  else ledcWrite(BUZZER_CHANNEL, 0);
+#endif
+}
+
+void plus2SignalTick()
+{
+  if (!s_signalInit) {
+    s_signalInit = true;
+    s_seenShares = g_shareFoundEvents; // nothing to celebrate from before boot
+    s_seenBlocks = g_blockFoundEvents;
+#if SHARE_BEEP
+    ledcSetup(BUZZER_CHANNEL, 4000, 8);
+    ledcAttachPin(PIN_BUZZER, BUZZER_CHANNEL);
+    ledcWrite(BUZZER_CHANNEL, 0);
+#endif
+  }
+
+  if (g_blockFoundEvents != s_seenBlocks) {
+    s_seenBlocks = g_blockFoundEvents;
+    s_seenShares = g_shareFoundEvents;
+    s_blockPattern = true;
+    s_signalSteps = 30;
+  } else if (g_shareFoundEvents != s_seenShares) {
+    s_seenShares = g_shareFoundEvents;
+    // At most one share signal every 10 s, whatever the counter does
+    if (s_signalSteps == 0 && (s_lastShareSignal == 0 || millis() - s_lastShareSignal >= SHARE_SIGNAL_MIN_GAP_ms)) {
+      s_lastShareSignal = millis();
+      s_blockPattern = false;
+      s_signalSteps = 2;
+    }
+  }
+
+  if (s_signalSteps <= 0)
+    return;
+  s_signalSteps--;
+
+  bool led;
+  uint32_t tone = 0;
+  if (s_blockPattern) {
+    led = (s_signalSteps % 2) == 0;
+    if (s_signalSteps >= 24) tone = 2000 + (30 - s_signalSteps) * 400; // rising chirp
+  } else {
+    led = s_signalSteps == 1;   // first step on, second off
+    if (s_signalSteps == 1) tone = 4000;
+  }
+  if (s_signalSteps == 0) { led = false; tone = 0; }
+
+#if SHARE_LED
+  digitalWrite(LED_PIN, led ? HIGH : LOW);
+#else
+  (void)led;
+#endif
+  buzzer(tone);
 }
 
 #endif // M5STICK_C_PLUS2

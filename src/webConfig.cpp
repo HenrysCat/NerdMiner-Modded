@@ -155,10 +155,14 @@ static void handleRoot()
   page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
 #endif
 #ifdef TDISPLAY_PULSE
+#ifdef M5STICK_C_PLUS2
+  page += "<label><input type='checkbox' name='flip' " + String(Settings.flipDisplay ? "checked" : "") + "> Flip display (rotate 180 degrees)</label>";
+#else
   page += "<label><input type='checkbox' name='flip' " + String(Settings.flipDisplay ? "checked" : "") + "> Flip display (USB on the left)</label>";
+#endif
   page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
 #endif
-#if defined(M5STICK_C_PLUS2) && PLUS2_BACKLIGHT_PWM
+#if defined(M5STICK_C_PLUS2) && PLUS2_BACKLIGHT_PWM && !defined(TDISPLAY_PULSE)
   page += "<label>Screen brightness (0-255)</label><input type='number' name='brightness' min='0' max='255' value='" + String(Settings.Brightness) + "'>";
 #endif
 #ifdef HAS_BACKLIGHT_CONTROL
@@ -341,7 +345,7 @@ static void handleSave()
   if (webCfgServer.hasArg("brightness"))
     next.Brightness = constrain(webCfgServer.arg("brightness").toInt(), 0, 255);
 #endif
-#if defined(M5STICK_C_PLUS2) && PLUS2_BACKLIGHT_PWM
+#if defined(M5STICK_C_PLUS2) && PLUS2_BACKLIGHT_PWM && !defined(TDISPLAY_PULSE)
   if (webCfgServer.hasArg("brightness"))
     next.Brightness = constrain(webCfgServer.arg("brightness").toInt(), 0, 255);
 #endif

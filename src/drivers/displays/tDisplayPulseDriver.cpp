@@ -18,6 +18,12 @@
 // The original look is kept in tDisplayV1Driver.cpp (build the
 // TTGO-T-Display-Classic env, or define TDISPLAY_THEME_CLASSIC).
 //
+// Also used by the M5StickC Plus2 (env M5Stick-C-Plus2-Pulse): same 240x135
+// ST7789. There the right-side button B is "next screen" (double click = next
+// accent), the front button A is screen off/on (double click = flip), the
+// header shows the battery level and the LED / buzzer / low-battery power-off
+// come from m5stickPlus2Hw.cpp.
+//
 // Dev aid: -D TDISPLAY_UI_SCREENSHOT=1 renders every screen once at boot into
 // an offscreen 8-bit sprite, keeps them run-length encoded and serves them at
 // http://<ip>/shot?i=<n> (tools/tdisplay_shots.py turns them into PNGs).
@@ -39,6 +45,9 @@
 #include "drivers/storage/nvMemory.h"
 #include "drivers/storage/storage.h"
 #include "currency.h"
+#ifdef M5STICK_C_PLUS2
+#include "m5stickPlus2Hw.h"
+#endif
 
 extern nvMemory nvMem;
 extern monitor_data mMonitor;
@@ -49,7 +58,7 @@ extern unsigned long mPoolUpdate;
 extern String readCustomAPName(); // wManager.cpp
 
 OpenFontRender render;
-TFT_eSPI tft = TFT_eSPI(); // pins in lib/TFT_eSPI/User_Setups/Setup25_TTGO_T_Display.h
+TFT_eSPI tft = TFT_eSPI(); // pins in lib/TFT_eSPI/User_Setups/Setup25_TTGO_T_Display.h (Plus2: Setup304)
 
 // ---------------------------------------------------------------- palette --
 
@@ -64,6 +73,7 @@ static const uint16_t C_DIM = RGB565(112, 128, 156);
 static const uint16_t C_GOOD = RGB565(61, 255, 176);
 static const uint16_t C_WARN = RGB565(255, 176, 40);
 static const uint16_t C_GOLD = RGB565(255, 206, 64);
+static const uint16_t C_BAD = RGB565(255, 72, 88);
 
 struct Accent
 {
@@ -112,7 +122,11 @@ static uint16_t mix565(uint16_t a, uint16_t b, uint8_t t)
 #define G_R 52
 #define G_RI 45
 #define G_SEGS 30
+#ifdef M5STICK_C_PLUS2
+#define G_MAX_KH 1200.0f // full scale: 40 KH/s per segment (the Plus2 runs ~990, like the CYD)
+#else
 #define G_MAX_KH 600.0f // full scale: 20 KH/s per segment (the T-Display runs ~400)
+#endif
 
 // --------------------------------------------------------------- UI state --
 
@@ -401,12 +415,13 @@ struct HdrV
   String time;
   int bars;
   int status;
+  int batt = -1; // battery %, -1 = none (only the M5StickC Plus2 has one)
 };
 
 static void drawHeader(const HdrV &h)
 {
   char k[48];
-  snprintf(k, sizeof(k), "%s|%d|%d|%d", h.time.c_str(), h.bars, h.status, accentIdx);
+  snprintf(k, sizeof(k), "%s|%d|%d|%d|%d", h.time.c_str(), h.bars, h.status, h.batt, accentIdx);
   if (!need(W_HDR, k))
     return;
   const int X0 = 13, W = SCR_W - X0;
@@ -444,6 +459,16 @@ static void drawHeader(const HdrV &h)
   {
     int bh = 3 + i * 2;
     wgt.fillRect(bx + i * 3, 13 - bh, 2, bh, i < h.bars ? cAcc : C_TRACK);
+  }
+
+  // battery level left of the wifi bars, in the gap after the state chip
+  // ("100%" is 23px, the gap ~32px)
+  if (h.batt >= 0)
+  {
+    char b[8];
+    snprintf(b, sizeof(b), "%d%%", h.batt);
+    uint16_t bc = h.batt > 50 ? C_GOOD : (h.batt > 20 ? C_WARN : C_BAD);
+    text(wgt, b, bx - 4, 4, 9, bc, C_BG, Align::TopRight);
   }
 
   wEnd(X0, 0);
@@ -939,6 +964,11 @@ static HdrV liveHeader(const String &time)
   h.time = time;
   h.bars = wifiBars();
   h.status = uiStatus();
+#if defined(M5STICK_C_PLUS2) && defined(PIN_BATTERY_ADC)
+  const int mv = plus2BatteryCachedMillivolts();
+  if (mv > 0)
+    h.batt = plus2BatteryPercent(mv);
+#endif
   return h;
 }
 
@@ -1086,7 +1116,11 @@ void tDisplayPulse_Init(void)
   // Backlight: LEDC channel 0, 5kHz, 8 bit (0-255 duty). The duty has to be
   // written after attaching (Arduino-ESP32 2.0.x re-applies the channel's
   // read-back duty on attach).
+#ifdef M5STICK_C_PLUS2
+  ledcSetup(0, PLUS2_BACKLIGHT_FREQ, 8); // 256 Hz as in M5GFX: at 5 kHz the Plus2 backlight stays dark
+#else
   ledcSetup(0, 5000, 8);
+#endif
   ledcAttachPin(TFT_BL, 0);
   ledcWrite(0, Settings.Brightness);
 
@@ -1133,7 +1167,17 @@ static void persistFlip(bool flipped)
   }
 }
 
+// Left/front button double click: only records the request, the monitor task
+// flips in DoLedStuff. Buttons are read in loop() on the other core; drawing
+// from there while the monitor task is mid-frame breaks TFT_eSPI's SPI bus
+// lock (assert in xQueueGenericSend, then a reboot).
+static volatile bool rotateRequested = false;
 void tDisplayPulse_AlternateRotation(void)
+{
+  rotateRequested = true;
+}
+
+static void applyRotation(void)
 {
   const bool flipped = tft.getRotation() != ROT_FLIPPED;
   tft.setRotation(flipped ? ROT_FLIPPED : ROT_NORMAL);
@@ -1161,8 +1205,27 @@ void tDisplayPulse_SetupScreen(void)
   paintSetup(out());
 }
 
+#ifdef M5STICK_C_PLUS2
+// Shown by plus2BatteryGuardTick() (m5stickPlus2Hw.cpp) before it cuts the power
+static void showLowBattery()
+{
+  uiLive = false;
+  uiScreen = -1;
+  TFT_eSPI &d = out();
+  clearScreen(d);
+  text(d, "LOW BATTERY", SCR_W / 2, 38, 22, C_BAD, C_BG, Align::TopCenter);
+  text(d, "Powering off, please charge", SCR_W / 2, 76, 11, C_DIM, C_BG, Align::TopCenter);
+}
+#endif
+
 void tDisplayPulse_AnimateCurrentScreen(unsigned long frame)
 {
+#ifdef M5STICK_C_PLUS2
+#ifdef PIN_BATTERY_ADC
+  plus2BatteryMillivolts(); // keeps the reading fresh (every 5 s) for the header and the web monitor
+#endif
+  plus2BatteryGuardTick(showLowBattery);
+#endif
   if (!uiLive || uiScreen < 0)
     return;
   drawPulse(frame);
@@ -1175,11 +1238,19 @@ void tDisplayPulse_AnimateCurrentScreen(unsigned long frame)
 
 void tDisplayPulse_DoLedStuff(unsigned long frame)
 {
+#ifdef M5STICK_C_PLUS2
+  plus2SignalTick(); // LED / buzzer for shares and blocks
+#endif
   if (accentRequested)
   {
     accentRequested = false;
     noteScreenActivity();
     setAccent(accentIdx + 1);
+  }
+  if (rotateRequested)
+  {
+    rotateRequested = false;
+    applyRotation();
   }
 
   // Screen changed by a button: draw the new page right away from the last

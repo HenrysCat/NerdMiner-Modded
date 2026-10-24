@@ -62,7 +62,16 @@
 #define PLUS2_BATTERY_OFF_mV 3400
 #endif
 
-// 135x240 ST7789, same layout as the LilyGo T-Display V1
+// 135x240 ST7789, same panel as the LilyGo T-Display V1. Default: the
+// original bitmap screens (tDisplayV1Driver.cpp). -D PLUS2_THEME_PULSE=1
+// (env M5Stick-C-Plus2-Pulse) uses the T-Display's Pulse theme instead
+// (tDisplayPulseDriver.cpp).
+#if PLUS2_THEME_PULSE
+#define TDISPLAY_PULSE
+// POOL screen: stats from the pool actually in use
+#define SCREEN_WORKERS_ENABLE (1)
+#else
 #define V1_DISPLAY
+#endif
 
 #endif

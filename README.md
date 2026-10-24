@@ -98,7 +98,7 @@ Every time an stratum job notification is received miner update its current work
 - LILYGO T-HMI ([Aliexpress link\*](https://s.click.aliexpress.com/e/_oFII4s2)) / Dev support: @cosmicpsyop
 - ESP32-C3 0.42 Inch OLED ([Aliexpress link\*](https://s.click.aliexpress.com/e/_oDmT4Id) / Dev support: @mrthiti / ⚡ wallet@thiti.dev)
 - ESP32-S3 0.42 Inch OLED ([Aliexpress link\*](https://s.click.aliexpress.com/e/_oFIMUoh) / Dev support: @mrthiti / ⚡ wallet@thiti.dev)
-- M5StickC Plus2 (ESP32-PICO-V3-02, build environment `M5Stick-C-Plus2`, see [M5StickC Plus2 notes](#m5stickc-plus2))
+- M5StickC Plus2 (ESP32-PICO-V3-02, build environment `M5Stick-C-Plus2`, or `M5Stick-C-Plus2-Pulse` for the Pulse theme, see [M5StickC Plus2 notes](#m5stickc-plus2))
 
 \*Affiliate links
 
@@ -285,6 +285,8 @@ The same two buttons, plus:
 #### M5StickC Plus2
 
 Build environment: `M5Stick-C-Plus2` (`pio run -e M5Stick-C-Plus2 -t upload`).
+
+Pulse theme (the T-Display's MINE / MARKET / CLOCK / POOL screens, battery level in the top bar): `M5Stick-C-Plus2-Pulse`. There button B double click = next accent colour; everything below applies to both builds.
 
 - **Button A** (front, "M5"): one click > screen off/on, double click > rotate 180°.
 - **Button B** (right side): one click > next screen, hold 5 s > **reset the configuration and reboot**. Hold it while powering on > **configuration mode**.

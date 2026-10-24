@@ -72,8 +72,21 @@ void tDisplay_AlternateScreenState(void)
 #endif
 }
 
+// Button double click: only records the request, the monitor task flips in
+// DoLedStuff. Buttons are read in loop() on the other core; an SPI write from
+// there while the monitor task is drawing breaks TFT_eSPI's bus lock (assert
+// in xQueueGenericSend, then a reboot).
+static volatile bool rotateRequested = false;
 void tDisplay_AlternateRotation(void)
 {
+  rotateRequested = true;
+}
+
+static void applyRequestedRotation(void)
+{
+  if (!rotateRequested)
+    return;
+  rotateRequested = false;
   tft.setRotation( flipRotation(tft.getRotation()) );
 }
 
@@ -570,37 +583,10 @@ void tDisplay_SetupScreen(void)
   tft.pushImage(0, 0, setupModeWidth, setupModeHeight, setupModeScreen);
 }
 
-#if defined(M5STICK_C_PLUS2) && defined(PIN_BATTERY_ADC) && PLUS2_LOW_BATTERY_OFF
-// ---------------------------------------------------------------------------
-// Low battery: below PLUS2_BATTERY_OFF_mV (under mining load) for 30 s in a
-// row -> message, then the power latch is released. On USB the stick keeps
-// running (the latch is taken again) and checking goes on. Readings under
-// 2.5 V are treated as a measuring problem, not as an empty cell.
-// ---------------------------------------------------------------------------
-#define BATTERY_CHECK_ms 5000
-#define BATTERY_LOW_FOR_ms 30000
-
-static void batteryGuardTick()
+#if defined(M5STICK_C_PLUS2)
+// Shown by plus2BatteryGuardTick() (m5stickPlus2Hw.cpp) before it cuts the power
+static void showLowBattery()
 {
-  static uint32_t lastCheck = 0, lowSince = 0;
-  if (lastCheck != 0 && millis() - lastCheck < BATTERY_CHECK_ms)
-    return;
-  lastCheck = millis();
-
-  const int mv = batteryMillivolts();
-  if (mv >= PLUS2_BATTERY_OFF_mV || mv < 2500) {
-    lowSince = 0;
-    return;
-  }
-  if (lowSince == 0) {
-    lowSince = millis();
-    Serial.printf("Battery low: %d mV\n", mv);
-    return;
-  }
-  if (millis() - lowSince < BATTERY_LOW_FOR_ms)
-    return;
-
-  Serial.printf("Battery empty (%d mV): switching off\n", mv);
   tft.fillScreen(TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_RED, TFT_BLACK);
@@ -608,11 +594,6 @@ static void batteryGuardTick()
   tft.setTextColor(0xDEDB, TFT_BLACK);
   tft.drawString("Powering off... please charge", WIDTH / 2, HEIGHT / 2 + 16, 2);
   tft.setTextDatum(TL_DATUM);
-  saveStat(); // before the power goes
-  delay(3000);
-  plus2CutPower(); // returns only on USB power
-  Serial.println("Still powered (USB): carrying on");
-  lowSince = 0;
 }
 #endif
 
@@ -622,89 +603,22 @@ void tDisplay_AnimateCurrentScreen(unsigned long frame)
 #if defined(M5STICK_C_PLUS2) && defined(PIN_BATTERY_ADC)
   plus2BatteryMillivolts(); // keeps the reading fresh (every 5 s) for the web monitor too
 #endif
-#if defined(M5STICK_C_PLUS2) && defined(PIN_BATTERY_ADC) && PLUS2_LOW_BATTERY_OFF
-  batteryGuardTick();
+#if defined(M5STICK_C_PLUS2)
+  plus2BatteryGuardTick(showLowBattery);
 #endif
 }
 
 #if defined(M5STICK_C_PLUS2)
-// ---------------------------------------------------------------------------
-// Share / block signal (M5StickC Plus2): red LED (GPIO19, active high) and
-// passive buzzer (GPIO2, LEDC channel 4 = timer 2, away from the backlight's
-// channel 0 / timer 0). Driven from the monitor loop (~100 ms per call), no
-// blocking delays. 32-bit share (about once an hour at ~1 MH/s): one 100 ms
-// flash + short beep, at most every 10 s. Block: 3 s of flashing with a
-// rising beep pattern.
-// ---------------------------------------------------------------------------
-#define BUZZER_CHANNEL 4
-static uint32_t s_seenShares = 0, s_seenBlocks = 0;
-static bool s_signalInit = false;
-static int s_signalSteps = 0;   // ~100 ms steps left in the current pattern
-static bool s_blockPattern = false;
-static uint32_t s_lastShareSignal = 0;
-#define SHARE_SIGNAL_MIN_GAP_ms 10000
-
-static void buzzer(uint32_t freq)
-{
-#if SHARE_BEEP
-  if (freq) ledcWriteTone(BUZZER_CHANNEL, freq);
-  else ledcWrite(BUZZER_CHANNEL, 0);
-#endif
-}
-
+// LED / buzzer for shares and blocks: plus2SignalTick() in m5stickPlus2Hw.cpp
 void tDisplay_DoLedStuff(unsigned long frame)
 {
-  if (!s_signalInit) {
-    s_signalInit = true;
-    s_seenShares = g_shareFoundEvents; // nothing to celebrate from before boot
-    s_seenBlocks = g_blockFoundEvents;
-#if SHARE_BEEP
-    ledcSetup(BUZZER_CHANNEL, 4000, 8);
-    ledcAttachPin(PIN_BUZZER, BUZZER_CHANNEL);
-    ledcWrite(BUZZER_CHANNEL, 0);
-#endif
-  }
-
-  if (g_blockFoundEvents != s_seenBlocks) {
-    s_seenBlocks = g_blockFoundEvents;
-    s_seenShares = g_shareFoundEvents;
-    s_blockPattern = true;
-    s_signalSteps = 30;
-  } else if (g_shareFoundEvents != s_seenShares) {
-    s_seenShares = g_shareFoundEvents;
-    // At most one share signal every 10 s, whatever the counter does
-    if (s_signalSteps == 0 && (s_lastShareSignal == 0 || millis() - s_lastShareSignal >= SHARE_SIGNAL_MIN_GAP_ms)) {
-      s_lastShareSignal = millis();
-      s_blockPattern = false;
-      s_signalSteps = 2;
-    }
-  }
-
-  if (s_signalSteps <= 0)
-    return;
-  s_signalSteps--;
-
-  bool led;
-  uint32_t tone = 0;
-  if (s_blockPattern) {
-    led = (s_signalSteps % 2) == 0;
-    if (s_signalSteps >= 24) tone = 2000 + (30 - s_signalSteps) * 400; // rising chirp
-  } else {
-    led = s_signalSteps == 1;   // first step on, second off
-    if (s_signalSteps == 1) tone = 4000;
-  }
-  if (s_signalSteps == 0) { led = false; tone = 0; }
-
-#if SHARE_LED
-  digitalWrite(LED_PIN, led ? HIGH : LOW);
-#else
-  (void)led;
-#endif
-  buzzer(tone);
+  applyRequestedRotation();
+  plus2SignalTick();
 }
 #else
 void tDisplay_DoLedStuff(unsigned long frame)
 {
+  applyRequestedRotation();
 }
 #endif
 

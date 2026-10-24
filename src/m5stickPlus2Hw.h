@@ -23,4 +23,13 @@ int plus2BatteryPercent(int mv);
 // latch is taken again and the function returns.
 void plus2CutPower();
 
+// Monitor task, every animation frame (~100 ms), from the display driver.
+//  - plus2BatteryGuardTick: below PLUS2_BATTERY_OFF_mV for 30 s on battery,
+//    calls showNotice() (the driver's "Low battery" screen), saves the stats
+//    and cuts the power. Does nothing with -D PLUS2_LOW_BATTERY_OFF=0.
+//  - plus2SignalTick: LED flash / beep for an accepted 32-bit share, a longer
+//    pattern for a block (SHARE_LED / SHARE_BEEP).
+void plus2BatteryGuardTick(void (*showNotice)());
+void plus2SignalTick();
+
 #endif // M5STICK_PLUS2_HW_H
