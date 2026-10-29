@@ -49,7 +49,7 @@ String poolAPIUrl;
 enum PoolApiStyle {
   POOL_API_PUBLICPOOL = 0, // public-pool.io, sethforprivacy, solomining, hmpool.io (digi, bch)
   POOL_API_HMPOOL,         // btc.hmpool.io (HashedMax Unity Pool)
-  // ckpool-solo family: heliospool.com/.eu/.asia AND pool.nerdminers.org
+  // ckpool-solo family: heliospool.com/.eu/.asia, (eu/au)solo.ckpool.org AND pool.nerdminers.org
   // (confirmed from nerdminers.org's own fork source, golden-guy/ckpool-solo
   // @nerdminer_v2 -- its per-user JSON uses the same hashrate1hr/workers/
   // bestever field names as heliospool's schema below).
@@ -733,6 +733,13 @@ String getPoolAPIUrl(void) {
             // its per-user JSON at this same /users/<address> path uses the
             // same hashrate1hr/workers/bestever fields as heliospool.
             url = "https://pool.nerdminers.org/users/";
+            style = POOL_API_CKPOOL;
+        }
+        else if (pool.endsWith(".ckpool.org")) {
+            // solo.ckpool.org, eusolo., ausolo.: each region serves its own
+            // stats at https://<host>/users/<address> (another region answers
+            // 404 for the same address), same fields as heliospool.
+            url = "https://" + pool + "/users/";
             style = POOL_API_CKPOOL;
         }
         else {
