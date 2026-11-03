@@ -23,7 +23,7 @@ static void printConfig(const JsonDocument &json)
     DynamicJsonDocument copy(json.memoryUsage() + 512);
     copy.set(json);
     for (const char *key : {JSON_SPIFFS_KEY_POOLPASS, JSON_SPIFFS_KEY_BACKUPPOOLPASS, JSON_SPIFFS_KEY_WEBPASSWORD,
-                            JSON_SPIFFS_KEY_MQTTPASS})
+                            JSON_SPIFFS_KEY_MQTTPASS, "mailPass", "mailFrom", "mailTo"})
     {
         const char *v = copy[key].as<const char *>();
         if (v && *v)
@@ -50,7 +50,7 @@ bool nvMemory::saveConfig(TSettings* Settings)
         Serial.println(F("SPIFS: Saving configuration."));
 
         // Create a JSON document (on the heap: it has outgrown a small stack)
-        DynamicJsonDocument json(3072); // room for the MQTT fields too
+        DynamicJsonDocument json(4096); // settings including opt-in Gmail
         json[JSON_SPIFFS_KEY_POOLURL] = Settings->PoolAddress;
         json[JSON_SPIFFS_KEY_POOLPORT] = Settings->PoolPort;
         json[JSON_SPIFFS_KEY_POOLPASS] = Settings->PoolPassword;
@@ -65,6 +65,10 @@ bool nvMemory::saveConfig(TSettings* Settings)
         json[JSON_SPIFFS_KEY_MQTTUSER] = Settings->MqttUser;
         json[JSON_SPIFFS_KEY_MQTTPASS] = Settings->MqttPass;
         json[JSON_SPIFFS_KEY_MQTTTOPIC] = Settings->MqttTopic;
+        json["mailEnabled"] = Settings->MailEnabled;
+        json["mailFrom"] = Settings->MailFrom;
+        json["mailTo"] = Settings->MailTo;
+        json["mailPass"] = Settings->MailPass;
         json[JSON_SPIFFS_KEY_TIMEZONE] = Settings->Timezone;
         json[JSON_SPIFFS_KEY_STATS2NV] = Settings->saveStats;
         json[JSON_SPIFFS_KEY_INVCOLOR] = Settings->invertColors;
@@ -87,6 +91,10 @@ bool nvMemory::saveConfig(TSettings* Settings)
         json[JSON_SPIFFS_KEY_LEDSCREENOFF] = Settings->ledScreenOff;
 #endif
 
+        if (json.overflowed()) {
+            Serial.println("SPIFS: config document capacity exceeded");
+            return false;
+        }
         printConfig(json);
 
         // Into the temporary file first
@@ -152,7 +160,7 @@ bool nvMemory::loadConfig(TSettings* Settings)
             if (configFile)
             {
                 Serial.println("SPIFS: Loading config file");
-                DynamicJsonDocument json(3072); // room for the MQTT fields too
+                DynamicJsonDocument json(4096); // settings including opt-in Gmail
                 DeserializationError error = deserializeJson(json, configFile);
                 configFile.close();
                 printConfig(json);
@@ -179,6 +187,10 @@ bool nvMemory::loadConfig(TSettings* Settings)
                     Settings->MqttUser = json[JSON_SPIFFS_KEY_MQTTUSER] | Settings->MqttUser;
                     Settings->MqttPass = json[JSON_SPIFFS_KEY_MQTTPASS] | Settings->MqttPass;
                     Settings->MqttTopic = json[JSON_SPIFFS_KEY_MQTTTOPIC] | Settings->MqttTopic;
+                    Settings->MailEnabled = json["mailEnabled"] | false;
+                    Settings->MailFrom = json["mailFrom"] | Settings->MailFrom;
+                    Settings->MailTo = json["mailTo"] | Settings->MailTo;
+                    Settings->MailPass = json["mailPass"] | Settings->MailPass;
                     if (json.containsKey(JSON_SPIFFS_KEY_TIMEZONE))
                         Settings->Timezone = json[JSON_SPIFFS_KEY_TIMEZONE].as<int>();
                     if (json.containsKey(JSON_SPIFFS_KEY_STATS2NV))

@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <mutex>
+#include <atomic>
 
 // Serializes classic-ESP32 (CONFIG_IDF_TARGET_ESP32) hardware SHA register
 // access (SHA_TEXT_BASE) against mbedTLS's own hardware-accelerated TLS
@@ -18,6 +19,9 @@
 // while doing so; any code that can trigger a TLS handshake with hardware
 // SHA active (e.g. the pool-stats HTTPS fetch) must hold it too.
 extern std::mutex g_hwShaMutex;
+// Mail is a rare external SHA user. Classic HW mining yields BETWEEN
+// complete nonce chunks while it is requested; the hashing loop is unchanged.
+extern std::atomic<bool> g_mailShaRequested;
 
 // Bumped by the stratum task when the pool accepts a 32-bit share (difficulty
 // >= 1, the "32BITS SHARES" counter -- not every pool share, those come in
@@ -155,4 +159,6 @@ typedef struct{
 } miner_data;
 
 
+// Age of the last published monitor rate sample (wrap-safe milliseconds).
+uint32_t rateSampleAgeMs();
 #endif // UTILS_API_H

@@ -130,6 +130,11 @@ struct TSettings
 	String MqttUser{ "" };
 	String MqttPass{ "" };
 	String MqttTopic{ "" };
+    // Opt-in direct Gmail SMTP, configured only on the authenticated LAN page.
+    bool MailEnabled{ false };
+    String MailFrom{ "" };
+    String MailTo{ "" };
+    String MailPass{ "" };
 };
 
 #endif // _STORAGE_H_

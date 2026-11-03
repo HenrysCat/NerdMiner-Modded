@@ -13,6 +13,10 @@ Original NerdMiner_v2 project https://github.com/BitMaker-hub/NerdMiner_v2
 
 ## What's different in this mod
 
+Proposed additions in this contribution: [hashrate history, optional Gmail reports,
+diagnostics and classic ESP32 SHA coordination](docs/dashboard-mail-and-sha.md).
+RAM follow-up: [bounded measurements, HTTP allocation pressure and mail-task cleanup](docs/memory-diagnostics.md).
+
 ![NerdMiner Modded running on a CYD](images/nerdminer-mod.gif)
 
 > **⚠️ Tested on five boards only.** The changes in this fork have been developed and tested on the **ESP32-2432S028R (2.8" "Cheap Yellow Display", CYD, also the version with two USB ports)**, the **4.0" CYD with the 320x480 ST7796 panel**, the **LilyGO T-Display 1.14"**, the **LCDWiki ES3C35P (ESP32-S3, 3.5" 320x480 touch screen)** and a **screenless ESP32-WROOM-32 dev board**. Other boards still build from the same code base as the original, but they have **not** been tested with these changes. Expect rough edges, and please report what you find.

@@ -10,6 +10,9 @@
 #include "mining.h"
 #include "utils.h"
 #include "monitor.h"
+#include "pauseDiagnostics.h"
+#include "memoryDiagnostics.h"
+#include "httpJsonStream.h"
 #include "wManager.h"
 #include "drivers/storage/storage.h"
 #include "drivers/devices/device.h"
@@ -118,19 +121,20 @@ void updateGlobalData(void){
     
     if(fetchDue(mGlobalUpdate, mGlobalTry, UPDATE_Global_min * 60 * 1000)){
             
+        // Whole operation, including payload parsing and client destruction.
+        MemoryProbe memory(MemoryPoint::NetworkBegin, MemoryPoint::NetworkEnd);
         //Make first API call to get global hash and current difficulty
         HTTPClient http;
         http.setTimeout(FETCH_TIMEOUT_ms);
         try {
         http.begin(getGlobalHash);
         int httpCode;
-        { HW_SHA_REQUEST(); std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
+        httpCode = streamingGet(http, BackgroundFetch::Network);
 
         if (httpCode == HTTP_CODE_OK) {
-            String payload = http.getString();
             
             StaticJsonDocument<1024> doc;
-            deserializeJson(doc, payload);
+            readHttpJson(http, doc);
             String temp = "";
             if (doc.containsKey("currentHashrate")) temp = String(doc["currentHashrate"].as<float>());
             if(temp.length()>18 + 3) //Exahashes more than 18 digits + 3 digits decimals
@@ -148,14 +152,14 @@ void updateGlobalData(void){
 
       
         //Make third API call to get fees
+        noteMemory(MemoryPoint::FeesBegin);
         http.begin(getFees);
-        { HW_SHA_REQUEST(); std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
+        httpCode = streamingGet(http, BackgroundFetch::Fees);
 
         if (httpCode == HTTP_CODE_OK) {
-            String payload = http.getString();
             
             StaticJsonDocument<1024> doc;
-            deserializeJson(doc, payload);
+            readHttpJson(http, doc);
             String temp = "";
             if (doc.containsKey("halfHourFee")) gData.halfHourFee = doc["halfHourFee"].as<int>();
 #ifdef SCREEN_FEES_ENABLE
@@ -170,6 +174,7 @@ void updateGlobalData(void){
         }
         
         http.end();
+        noteMemory(MemoryPoint::FeesEnd);
         } catch(...) {
           Serial.println("Global data HTTP error caught");
           http.end();
@@ -183,17 +188,27 @@ static volatile uint32_t s_blockHeight = 0; // numeric copy, safe to read from a
 String getBlockHeight(void){
     
     if(fetchDue(mHeightUpdate, mHeightTry, UPDATE_Height_min * 60 * 1000)){
+        MemoryProbe memory(MemoryPoint::HeightBegin, MemoryPoint::HeightEnd);
             
         HTTPClient http;
         http.setTimeout(FETCH_TIMEOUT_ms);
         try {
         http.begin(getHeightAPI);
         int httpCode;
-        { HW_SHA_REQUEST(); std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
+        httpCode = streamingGet(http, BackgroundFetch::Height);
 
         if (httpCode == HTTP_CODE_OK) {
-            String payload = http.getString();
-            payload.trim();
+            if(http.header("Transfer-Encoding").length() || http.header("Content-Encoding").length())throw HttpJsonError{};
+            char heightText[17]={};size_t heightLength=0;
+            {
+              HW_SHA_REQUEST();std::lock_guard<std::mutex> sha(g_hwShaMutex);
+              BoundedHttpStream body(http.getStream());
+              heightLength=body.readBytesUntil('\n',heightText,16);
+            }
+            if(!heightLength || heightLength>=16)throw HttpJsonError{};
+            String payload(heightText);payload.trim();
+            if(!payload.length() || payload.length()>10)throw HttpJsonError{};
+            for(size_t i=0;i<payload.length();++i)if(payload[i]<'0'||payload[i]>'9')throw HttpJsonError{};
 
             current_block = payload;
             s_blockHeight = (uint32_t)payload.toInt();
@@ -217,6 +232,7 @@ String getBTCprice(void){
     static char price_buffer[24];
 
     if(fetchDue(mBTCUpdate, mBTCTry, UPDATE_BTC_min * 60 * 1000)){
+        MemoryProbe memory(MemoryPoint::PriceBegin, MemoryPoint::PriceEnd);
 
         HTTPClient http;
         http.setTimeout(FETCH_TIMEOUT_ms);
@@ -224,13 +240,12 @@ String getBTCprice(void){
         try {
         http.begin(String(getBTCAPI) + cur.code);
         int httpCode;
-        { HW_SHA_REQUEST(); std::lock_guard<std::mutex> shaLock(g_hwShaMutex); httpCode = http.GET(); }
+        httpCode = streamingGet(http, BackgroundFetch::Price);
 
         if (httpCode == HTTP_CODE_OK) {
-            String payload = http.getString();
 
             StaticJsonDocument<1024> doc;
-            deserializeJson(doc, payload);
+            readHttpJson(http, doc);
           
             if (doc.containsKey("bitcoin") && doc["bitcoin"].containsKey(cur.code)) {
                 bitcoin_price = doc["bitcoin"][cur.code];
@@ -770,6 +785,7 @@ pool_data getPoolData(void){
     //pool_data pData;    
     if((mPoolUpdate == 0) || (millis() - mPoolUpdate > UPDATE_POOL_min * 60 * 1000)){      
         if (WiFi.status() != WL_CONNECTED) return pData;
+        MemoryProbe memory(MemoryPoint::PoolBegin, MemoryPoint::PoolEnd);
         //Make first API call to get global hash and current difficulty
         // Explicit, freshly-constructed WiFiClientSecure per call (rather
         // than letting HTTPClient manage an internal one implicitly) --
@@ -815,15 +831,8 @@ pool_data getPoolData(void){
           // showing abort() inside sha_hal_read_digest() when both ran
           // concurrently. g_hwShaMutex closes that gap; see mining.h.
           int httpCode;
-          {
-            HW_SHA_REQUEST();
-            g_hwShaMutex.lock();
-            httpCode = http.GET();
-            g_hwShaMutex.unlock();
-          }
+          httpCode = streamingGet(http, BackgroundFetch::Pool);
           if (httpCode == HTTP_CODE_OK) {
-              String payload = http.getString();
-              // Serial.println(payload);
               double temp;
               if (apiStyle == POOL_API_CKPOOL) {
                 // ckpool-solo family (heliospool, nerdminers.org):
@@ -835,7 +844,7 @@ pool_data getPoolData(void){
                 filter["workers"] = true;
                 filter["hashrate1hr"] = true;
                 StaticJsonDocument<1024> doc;
-                deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+                readHttpJson(http, doc, DeserializationOption::Filter(filter));
                 if (doc.containsKey("workers")) pData.workersCount = doc["workers"].as<int>();
                 if (doc.containsKey("hashrate1hr")) pData.workersHash = doc["hashrate1hr"].as<String>();
                 if (doc.containsKey("bestever")) {
@@ -856,7 +865,7 @@ pool_data getPoolData(void){
                 filter["workers"][0]["active"] = true;
                 filter["workers"][0]["hashrate"] = true;
                 StaticJsonDocument<2048> doc;
-                deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+                readHttpJson(http, doc, DeserializationOption::Filter(filter));
                 const JsonArray& workers = doc["workers"].as<JsonArray>();
                 int activeWorkers = 0;
                 float totalhashs = 0;
@@ -884,7 +893,7 @@ pool_data getPoolData(void){
                 filter["workers"][0]["sessionId"] = true;
                 filter["workers"][0]["hashRate"] = true;
                 StaticJsonDocument<2048> doc;
-                deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+                readHttpJson(http, doc, DeserializationOption::Filter(filter));
                 //Serial.println(serializeJsonPretty(doc, Serial));
                 if (doc.containsKey("workersCount")) pData.workersCount = doc["workersCount"].as<int>();
                 const JsonArray& workers = doc["workers"].as<JsonArray>();
@@ -916,8 +925,6 @@ pool_data getPoolData(void){
           } else {
               Serial.println("\n####### Pool Data HTTP Error!");
               Serial.println(httpCode);
-              String payload = http.getString();
-              Serial.println(payload);
               // Must still back off on failure, or a persistently-failing
               // pool API gets hammered every ~2s instead of once a minute —
               // enough to trip some pools' WAF/anti-abuse rate limiting and

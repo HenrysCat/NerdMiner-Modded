@@ -1,3 +1,6 @@
+#include "wifiDiagnostics.h"
+#include "poolDiagnostics.h"
+#include "pauseDiagnostics.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -9,12 +12,16 @@
 #include "mining.h"
 #include "monitor.h"
 #include "mqttPublisher.h"
+#include "mailNotifier.h"
+#include "mailPolicy.h"
+#include "memoryDiagnostics.h"
 #include "drivers/devices/device.h"
 #include "drivers/displays/display.h"
 #include "drivers/storage/storage.h"
 #include "currency.h"
 #include "cities.h"
 #include "webMonitorPage.h"
+#include "hashrateHistory.h"
 #ifdef M5STICK_C_PLUS2
 #include "m5stickPlus2Hw.h"
 #endif
@@ -88,6 +95,7 @@ static void handleRoot()
   if (!checkAuth())
     return;
 
+  webCfgServer.sendHeader("Cache-Control", "no-store");
   const TSettings Settings = currentSettings(); // shadows the global on purpose
   String page;
   page.reserve(5200);
@@ -229,6 +237,18 @@ static void handleRoot()
   page += String("<p><small>") + (mqttConnected() ? "Connected to the broker." : Settings.MqttEnabled ? "Not connected to the broker." : "Off.") +
           " Home Assistant finds the sensors by itself (MQTT discovery). Plain MQTT only (usually port 1883), no TLS.</small></p>";
 #endif
+  flush();
+  page += F("<h3>E-Mail (Gmail)</h3>");
+  page += "<label><input type='checkbox' name='mailenabled' " + String(Settings.MailEnabled ? "checked" : "") + "> E-Mail aktivieren</label>";
+  page += "<label>Gmail-Absender</label><input type='text' name='mailfrom' maxlength='100' value='" + htmlEscape(Settings.MailFrom) + "'>";
+  page += "<label>Empf&auml;nger</label><input type='text' name='mailto' maxlength='100' value='" + htmlEscape(Settings.MailTo) + "'>";
+  page += F("<label>Google-App-Passwort (leer lassen = behalten)</label><input type='password' name='mailpass' maxlength='32' autocomplete='new-password'>"
+            "<label><input type='checkbox' name='mailpassclear'> Gespeichertes App-Passwort entfernen</label>"
+            "<p><small>Bericht t&auml;glich 20:00 Europe/Berlin (Sommer-/Winterzeit automatisch). Warnung nach 2 Minuten Pool-Unterbrechung, Entwarnung nach 30 Sekunden stabiler Verbindung. "
+            "Maximal 3 Versandversuche, mindestens 15 Minuten zwischen Fehlversuchen. WLAN und Internet werden ben&ouml;tigt. Ein Versand kann das Mining kurz pausieren.</small></p>"
+            "<p><small>Nur ein Google-App-Passwort verwenden. Es wird auf dem Miner gespeichert; die Eingabe erfolgt &uuml;ber diese lokale HTTP-Seite. Nur im vertrauensw&uuml;rdigen Heimnetz eingeben.</small></p>");
+  page += "<p><small>Status: " + htmlEscape(mailStatusText()) + "</small></p>";
+  flush();
   page += F("<label>New password for this page (leave empty to keep it)</label>"
             "<input type='password' name='webpass' maxlength='63' autocomplete='new-password'>"
             "<label>New password again</label>"
@@ -241,7 +261,7 @@ static void handleRoot()
 #else
   page += F("<p><small>Settings apply straight away, no restart.</small></p>");
 #endif
-  page += F("</form><p><small><a href='/'>Live monitor</a> (no login needed) &middot; status as JSON: <a href='/api/status'>/api/status</a></small></p>");
+  page += F("</form><form method='POST' action='/mail-test'><button type='submit'>Testmail senden (zuerst Einstellungen speichern)</button></form><p><small><a href='/'>Live monitor</a> (no login needed) &middot; status as JSON: <a href='/api/status'>/api/status</a></small></p>");
 #ifdef HAS_BACKLIGHT_CONTROL
   page += F("<script>var f=document.forms[0],c=f.city,a=f.lat,o=f.lon;"
             "c.onchange=function(){if(c.value){var p=c.value.split(',');a.value=p[0];o.value=p[1]}};"
@@ -381,6 +401,18 @@ static void handleSave()
   next.ledScreenOff = webCfgServer.hasArg("ledscreen");
 #endif
 
+  next.MailEnabled = webCfgServer.hasArg("mailenabled");
+  if (webCfgServer.hasArg("mailfrom")) { next.MailFrom=webCfgServer.arg("mailfrom");next.MailFrom.trim(); }
+  if (webCfgServer.hasArg("mailto")) { next.MailTo=webCfgServer.arg("mailto");next.MailTo.trim(); }
+  String mailPassword=webCfgServer.arg("mailpass");mailPassword.replace(" ","");
+  if (webCfgServer.hasArg("mailpassclear")) next.MailPass="";
+  else if (mailPassword.length()) next.MailPass=mailPassword;
+  // Disabled mail must not prevent saving unrelated settings with empty defaults.
+  if (!mailSettingsAllowed(next.MailEnabled, mailAddressValid(next.MailFrom),
+      mailAddressValid(next.MailTo), mailPasswordValid(next.MailPass))) {
+    webCfgServer.send(400,"text/plain; charset=utf-8","E-Mail nicht gespeichert: Adressen und 16-stelliges Google-App-Passwort pruefen. Abschalten ist auch ohne Passwort moeglich.");
+    return;
+  }
   saveSettingsToFlash(&next);
 
   const bool restart = next.invertColors != before.invertColors || next.flipDisplay != before.flipDisplay;
@@ -396,6 +428,11 @@ static void handleSave()
       requestPoolChange(next); // stratum task reconnects if the pool in use changed
     const bool passChanged = next.WebPassword != before.WebPassword;
     Settings.WebPassword = next.WebPassword; // this task is the only reader
+    if (next.MailEnabled!=before.MailEnabled || next.MailFrom!=before.MailFrom || next.MailTo!=before.MailTo || next.MailPass!=before.MailPass) {
+      Settings.MailEnabled=next.MailEnabled;Settings.MailFrom=next.MailFrom;
+      Settings.MailTo=next.MailTo;Settings.MailPass=next.MailPass;
+      mailSettingsChanged();
+    }
     if (next.MqttEnabled != before.MqttEnabled || next.MqttHost != before.MqttHost || next.MqttPort != before.MqttPort ||
         next.MqttUser != before.MqttUser || next.MqttPass != before.MqttPass || next.MqttTopic != before.MqttTopic)
     {
@@ -557,43 +594,105 @@ static void handleStatus()
   webCfgServer.send(200, "application/json", out);
 }
 
-// --------------------------------------------------------------------------
-// Live monitor (webMonitorPage.h) and its hashrate history: one sample every
-// 30 s, the last hour, kept here in RAM (240 bytes).
-// --------------------------------------------------------------------------
-#define HISTORY_LEN 120
-#define HISTORY_PERIOD_ms 30000
-static uint16_t s_history[HISTORY_LEN]; // KH/s x 10
-static uint8_t s_historyCount = 0, s_historyHead = 0;
-static uint32_t s_historyLast = 0;
+// Phase 2: bounded histories, collected even with no browser connected.
+// 1176 bytes of sample arrays, no flash writes. Reset on reboot.
+static HashrateHistory<120, 30> s_hour;
+static HashrateHistory<180, 120> s_sixHours;
+static HashrateHistory<288, 300> s_day;
+static uint64_t s_lastHistoryTick = 0;
 
 static void historyTick()
 {
-  if (millis() - s_historyLast < HISTORY_PERIOD_ms)
-    return;
-  s_historyLast = millis();
-  uint32_t v = (uint32_t)(getMinerStatus().hashrateKHs * 10.0f + 0.5f);
-  if (v > 65535) v = 65535;
-  s_history[s_historyHead] = (uint16_t)v;
-  s_historyHead = (s_historyHead + 1) % HISTORY_LEN;
-  if (s_historyCount < HISTORY_LEN) s_historyCount++;
+  const uint64_t now = esp_timer_get_time() / 1000000ULL;
+  if (now - s_lastHistoryTick < 30) return;
+  s_lastHistoryTick = now;
+  const MinerStatus snapshot = getMinerStatus();
+  float rate = snapshot.hashrateKHs;
+  sampleRateDiagnostics(rate, rateSampleAgeMs(), snapshot.subscribed, snapshot.authorized);
+  // Also rejects NaN, negative and infinite rates before integer conversion.
+  if (!(rate >= 0.0f)) rate = 0.0f;
+  if (rate > 6553.4f) rate = 6553.4f;
+  const uint16_t value = (uint16_t)(rate * 10.0f + 0.5f);
+  s_hour.sample(now, value);
+  s_sixHours.sample(now, value);
+  s_day.sample(now, value);
 }
 
+template <size_t N, uint32_t Period>
+static void appendHistory(String &out, const HashrateHistory<N, Period> &h)
+{
+  out += '[';
+  for (size_t i = 0; i < h.count; ++i) {
+    if (i) out += ',';
+    const uint16_t v = h.at(i);
+    if (v == 65535) { out += F("null"); continue; }
+    out += v / 10; out += '.'; out += v % 10;
+  }
+  out += ']';
+}
+
+template <size_t N,uint32_t Period>
+static void appendMailStats(String &body,const char *label,const HashrateHistory<N,Period> &h) {
+  uint32_t sum=0;uint16_t lo=65535,hi=0;size_t count=0;
+  for(size_t i=0;i<h.count;++i) {
+    const uint16_t v=h.at(i);if(v==65535)continue;
+    sum+=v;if(v<lo)lo=v;if(v>hi)hi=v;++count;
+  }
+  body+=label;
+  if(!count){body+=": noch keine Messwerte\n";return;}
+  body+=": Min "+String(lo/10.0f,1)+", Max "+String(hi/10.0f,1)+", Mittel "+String(sum/(10.0f*count),1)+" KH/s ("+String((unsigned)count)+" Werte)\n";
+}
+void mailAppendHistoryStats(String &body) {
+  body+="Verlaufsstatistik (verfuegbare Messwerte, Luecken ausgeschlossen):\n";
+  appendMailStats(body,"1 h / 30-s-Stichproben",s_hour);
+  appendMailStats(body,"6 h / 2-min-Mittelwerte",s_sixHours);
+  appendMailStats(body,"24 h / 5-min-Mittelwerte",s_day);
+}
+static void handleHardwareComparison() {
+  if(!checkAuth())return;
+  if(webCfgServer.method()==HTTP_POST) {
+    if(!sameOrigin()){webCfgServer.send(403,"text/plain","Refused");return;}
+    const String action=webCfgServer.arg("action");
+    if(action=="start")startHardwareComparison();
+    else if(action=="stop")stopHardwareComparison();
+    else {webCfgServer.send(400,"text/plain","Unknown action");return;}
+    webCfgServer.sendHeader("Location","/hardware-test");
+    webCfgServer.send(303,"text/plain","");return;
+  }
+  webCfgServer.sendHeader("Cache-Control","no-store");
+  String page=F("<!doctype html><html lang='de'><meta charset='utf-8'><meta name='viewport' content='width=device-width'><title>Hardware-Vergleich</title><body style='font-family:Arial;max-width:600px;margin:24px'><h1>Hardware-Mining vergleichen</h1><p>Dieser Test pausiert nur den Hardware-Miner fuer 12 Minuten. Danach startet er automatisch wieder. WLAN, Poolverbindung und Software-Miner bleiben aktiv.</p><p>Die Hashrate sinkt waehrend des Tests deutlich. Ein Mausklick startet den Test.</p><p>Restzeit: ");
+  page+=String(hardwareComparisonRemaining());page+=F(" Sekunden</p><form method='post'><button name='action' value='start'>12-Minuten-Test starten</button> <button name='action' value='stop'>Test beenden</button></form><p><a href='/hardware-test'>Status aktualisieren</a> | <a href='/'>Dashboard</a></p></body></html>");
+  webCfgServer.send(200,"text/html; charset=utf-8",page);
+}
+static void handleMailTest() {
+  if(!checkAuth())return;
+  if(!sameOrigin()){webCfgServer.send(403,"text/plain","Refused");return;}
+  const bool queued=mailQueueTest();
+  webCfgServer.send(queued?202:409,"text/html; charset=utf-8",String("<html><body><p>")+
+    (queued?"Testmail vorgemerkt. Versandstatus unter Einstellungen pruefen.":"Mailversand nicht bereit oder Testmail bereits vorgemerkt. Einstellungen speichern und Status pruefen.")+"</p><a href='/settings'>Einstellungen</a></body></html>");
+}
 static void handleHistory()
 {
-  String out;
-  out.reserve(16 + s_historyCount * 7);
-  out = F("{\"interval_s\":");
-  out += HISTORY_PERIOD_ms / 1000;
-  out += F(",\"khs\":[");
-  for (uint8_t i = 0; i < s_historyCount; i++) {
-    const uint16_t v = s_history[(s_historyHead + HISTORY_LEN - s_historyCount + i) % HISTORY_LEN];
-    if (i) out += ',';
-    out += v / 10;
-    out += '.';
-    out += v % 10;
+  const String range = webCfgServer.arg("range");
+  if (range.length() && range != "1h" && range != "6h" && range != "24h") {
+    webCfgServer.send(400, "application/json", "{\"error\":\"range must be 1h, 6h or 24h\"}");
+    return;
   }
-  out += F("]}");
+  const uint32_t period = range == "24h" ? 300 : range == "6h" ? 120 : 30;
+  String out;
+  if (!out.reserve(3072)) {
+    webCfgServer.send(503, "application/json", "{\"error\":\"insufficient memory\"}");
+    return;
+  }
+  out = F("{\"interval_s\":"); out += period;
+  out += F(",\"age_s\":");
+  out += (uint32_t)(esp_timer_get_time() / 1000000ULL % period);
+  out += F(",\"khs\":");
+  if (period == 300) appendHistory(out, s_day);
+  else if (period == 120) appendHistory(out, s_sixHours);
+  else appendHistory(out, s_hour);
+  out += F(",\"khs_1h\":"); appendHistory(out, s_hour);
+  out += '}';
   webCfgServer.sendHeader("Cache-Control", "no-store");
   webCfgServer.send(200, "application/json", out);
 }
@@ -615,7 +714,30 @@ void setup_webConfig(void)
   webCfgServer.on("/", HTTP_GET, handleMonitor);            // live monitor, no login
   webCfgServer.on("/settings", HTTP_GET, handleRoot);        // settings, login
   webCfgServer.on("/save", HTTP_POST, handleSave);
+  webCfgServer.on("/mail-test", HTTP_POST, handleMailTest);
   webCfgServer.on("/api/status", HTTP_GET, handleStatus);
+  webCfgServer.on("/hardware-test", HTTP_GET, handleHardwareComparison);
+  webCfgServer.on("/hardware-test", HTTP_POST, handleHardwareComparison);
+  webCfgServer.on("/api/wifi-diagnostics", HTTP_GET, []() {
+    webCfgServer.sendHeader("Cache-Control", "no-store");
+    webCfgServer.send(200, "application/json", wifiDiagnosticsJson());
+  });
+  webCfgServer.on("/api/pool-diagnostics", HTTP_GET, []() {
+    webCfgServer.sendHeader("Cache-Control", "no-store");
+    webCfgServer.send(200, "application/json", poolDiagnosticsJson());
+  });
+  webCfgServer.on("/api/rate-diagnostics", HTTP_GET, []() {
+    webCfgServer.sendHeader("Cache-Control", "no-store");
+    webCfgServer.send(200, "application/json", rateDiagnosticsJson());
+  });
+  webCfgServer.on("/api/memory-diagnostics", HTTP_GET, []() {
+    webCfgServer.sendHeader("Cache-Control", "no-store");
+    webCfgServer.send(200, "application/json", memoryDiagnosticsJson());
+  });
+  webCfgServer.on("/api/pauses", HTTP_GET, []() {
+    webCfgServer.sendHeader("Cache-Control", "no-store");
+    webCfgServer.send(200, "application/json", backgroundPauseJson());
+  });
 #ifdef TDISPLAY_UI_SCREENSHOT
   // Dev builds: the screens rendered at boot (tDisplayPulseDriver.cpp),
   // run-length encoded; tools/tdisplay_shots.py turns them into PNGs.
@@ -653,7 +775,7 @@ void setup_webConfig(void)
 
 void webConfigProcess(void)
 {
-  historyTick(); // also before the server is up, so the graph has the full hour
+  historyTick(); // also before the server is up, so history grows without an open browser
   if (webCfgStarted)
     webCfgServer.handleClient();
 }

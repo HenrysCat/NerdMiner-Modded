@@ -1,3 +1,9 @@
+#include "classicShaEngines.h"
+#include "wifiDiagnostics.h"
+#include "poolDiagnostics.h"
+#include "poolRetryPolicy.h"
+#include <errno.h>
+#include "pauseDiagnostics.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -283,6 +289,8 @@ static volatile int8_t s_authorized = -1;
 static uint64_t s_rateKh[STATUS_RATE_SAMPLES];
 static uint32_t s_rateMs[STATUS_RATE_SAMPLES];
 static volatile uint8_t s_rateHead = 0, s_rateCount = 0;
+static std::atomic<uint32_t> s_ratePublishedMs{0};
+uint32_t rateSampleAgeMs() { return millis()-s_ratePublishedMs.load(); }
 // The since-boot average uses the 64-bit clock: millis() wraps after 49.7 days.
 static uint64_t s_bootKh = 0;
 static int64_t s_bootUs = 0, s_lastSampleUs = 0;
@@ -294,6 +302,7 @@ static void statusRateSample(uint64_t kh, uint32_t ms)
   s_rateMs[i] = ms;
   s_lastSampleUs = esp_timer_get_time();
   s_rateHead = i;
+  s_ratePublishedMs.store(ms);
   if (s_rateCount < STATUS_RATE_SAMPLES)
     s_rateCount++;
 }
@@ -384,29 +393,26 @@ int saveIntervalsSize = sizeof(saveIntervals)/sizeof(saveIntervals[0]);
 int currentIntervalIndex = 0;
 
 bool checkPoolConnection(void) {
-  
-  if (client.connected()) {
-    return true;
+  if(client.connected())return true;
+  if(isMinerSuscribed)recordPoolEvent(PoolEvent::TcpLost);
+  isMinerSuscribed=false;s_authorized=-1;s_authId=0;
+  if(serverIP==IPAddress(1,1,1,1) || (uint32_t)serverIP==0) {
+    IPAddress resolved;
+    if(WiFi.hostByName(activePoolAddress().c_str(),resolved)!=1 || (uint32_t)resolved==0) {
+      serverIP=IPAddress(1,1,1,1);
+      recordPoolEvent(PoolEvent::DnsFailed);return false;
+    }
+    serverIP=resolved;
   }
-  
-  isMinerSuscribed = false;
-
-  Serial.println("Client not connected, trying to connect..."); 
-  
-  //Resolve first time pool DNS and save IP
-  if(serverIP == IPAddress(1,1,1,1)) {
-    WiFi.hostByName(activePoolAddress().c_str(), serverIP);
-    Serial.printf("Resolved DNS and save ip (first time) got: %s\n", serverIP.toString().c_str());
-  }
-
-  //Try connecting pool IP
-  if (!client.connect(serverIP, activePoolPort())) {
-    Serial.println("Imposible to connect to : " + activePoolAddress());
-    WiFi.hostByName(activePoolAddress().c_str(), serverIP);
-    Serial.printf("Resolved DNS got: %s\n", serverIP.toString().c_str());
+  // Bound TCP establishment separately from the subsequent subscribe exchange.
+  errno=0;
+  if(!client.connect(serverIP,activePoolPort(),5000)) {
+    const int error=errno;
+    recordPoolEvent(PoolEvent::TcpFailed,error);
+    serverIP=IPAddress(1,1,1,1); // resolve afresh on the next attempt
     return false;
   }
-
+  recordPoolEvent(PoolEvent::TcpConnected);
   return true;
 }
 
@@ -470,6 +476,7 @@ struct JobResult
 
 static std::mutex s_job_mutex;
 std::mutex g_hwShaMutex;  // see mining.h for why this exists
+std::atomic<bool> g_mailShaRequested{false};
 #if defined(PIPELINED_S3_MINING)
 std::atomic<int> g_hwShaWanted{0}; // see mining.h
 #endif
@@ -562,6 +569,7 @@ static uint32_t RandomGet()
 #endif
 
 void runStratumWorker(void *name) {
+  setupWifiDiagnostics();
 
 // TEST: https://bitcoin.stackexchange.com/questions/22929/full-example-data-for-scrypt-stratum-client
 
@@ -595,12 +603,28 @@ void runStratumWorker(void *name) {
   uint32_t nonce_pool = 0;
   uint32_t job_pool = 0xFFFFFFFF;
   uint32_t last_job_time = millis();
+  unsigned connectionFailures=0;
+  bool wifiWasDown=false, awaitingFirstJob=true;
+  auto waitForPoolRetry = [&]() {
+    if(connectionFailures<6)++connectionFailures;
+    const uint32_t base=poolRetryDelayMs(connectionFailures);
+    const uint32_t delayMs=base==30000?base:base+(rand()%251);
+    recordPoolEvent(PoolEvent::RetryWait,(int)delayMs);
+    const uint32_t started=millis();
+    while(millis()-started<delayMs) {
+      vTaskDelay(50 / portTICK_PERIOD_MS);
+      std::lock_guard<std::mutex> lock(g_settingsMutex);
+      if(s_poolChangePending)break;
+    }
+  };
+
 
   // Drops the pool and its jobs; the loop below looks up activePoolAddress()
   // and connects to it.
   auto dropPool = [&]() {
     client.stop();
-    isMinerSuscribed = false;
+    isMinerSuscribed = false;s_authorized=-1;s_authId=0;
+    awaitingFirstJob=true;
     MiningJobStop(job_pool, s_submition_map);
     #if defined(PIPELINED_ASM_MINING) && defined(CONFIG_IDF_TARGET_ESP32)
     s_pl_ctx.run = 0; // don't finish the old job's chunk
@@ -612,6 +636,7 @@ void runStratumWorker(void *name) {
   };
   auto switchPool = [&](bool backup, const char *why) {
     s_onBackup = backup;
+    connectionFailures=0;recordPoolEvent(PoolEvent::PoolSwitched,backup?1:0);
     s_poolFailures = 0;
     s_backupSince = millis();
     Serial.printf("[STRATUM] %s, switching to the %s pool %s:%d\n", why, backup ? "backup" : "main",
@@ -642,47 +667,49 @@ void runStratumWorker(void *name) {
   while(true) {
 
     if(takePoolChange()){
+      connectionFailures=0;recordPoolEvent(PoolEvent::SettingsChanged);
       // New pool settings from the LAN settings page: drop the old pool and
       // its jobs, look the new address up and connect to it below.
       Serial.printf("[STRATUM] Pool settings changed, switching to %s:%d\n", activePoolAddress().c_str(), activePoolPort());
       dropPool();
     }
 
-    if(WiFi.status() != WL_CONNECTED){
+    if(!miningNetworkReady()){
+      if(!wifiWasDown) {
+        recordPoolEvent(PoolEvent::WifiLost);wifiWasDown=true;
+        dropPool();
+      }
       // WiFi is disconnected, so reconnect now
       mMonitor.NerdStatus = NM_Connecting;
       MiningJobStop(job_pool, s_submition_map);
+      noteMiningWifiReconnect();
       WiFi.reconnect();
       vTaskDelay(5000 / portTICK_PERIOD_MS);
       continue;
     } 
 
+    if(wifiWasDown){recordPoolEvent(PoolEvent::WifiRestored);wifiWasDown=false;}
     if(!checkPoolConnection()){
       MiningJobStop(job_pool, s_submition_map);
       if (poolFailed())
         continue; // try the other pool straight away
-      //If server is not reachable add random delay for connection retries
-      //Generate value between 1 and 60 secs
-      // A second at a time, so a pool fixed on the settings page is tried
-      // straight away instead of after the rest of the wait.
-      for (int s = 1 + rand() % 60; s > 0; s--) {
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        std::lock_guard<std::mutex> lock(g_settingsMutex);
-        if (s_poolChangePending) break;
-      }
+      awaitingFirstJob=true;
+      waitForPoolRetry();
       continue;
     }
 
     if(!isMinerSuscribed)
     {
+      awaitingFirstJob=true;
       //Stop miner current jobs
       mWorker = init_mining_subscribe();
 
       // STEP 1: Pool server connection (SUBSCRIBE)
       if(!tx_mining_subscribe(client, mWorker)) {
-        client.stop();
+        recordPoolEvent(PoolEvent::SubscribeFailed);
+        client.stop();isMinerSuscribed=false;s_authorized=-1;s_authId=0;
         MiningJobStop(job_pool, s_submition_map);
-        poolFailed();
+        if(!poolFailed())waitForPoolRetry();
         continue;
       }
 
@@ -696,7 +723,7 @@ void runStratumWorker(void *name) {
       // STEP 3: Suggest pool difficulty
       tx_suggest_difficulty(client, currentPoolDifficulty);
 
-      isMinerSuscribed=true;
+      isMinerSuscribed=true;recordPoolEvent(PoolEvent::Subscribed);
       uint32_t time_now = millis();
       mLastTXtoPool = time_now;
       last_job_time = time_now;
@@ -704,10 +731,11 @@ void runStratumWorker(void *name) {
 
     //Check if pool is down for almost 5minutes and then restart connection with pool (1min=600000ms)
     if(checkPoolInactivity(KEEPALIVE_TIME_ms, POOLINACTIVITY_TIME_ms)){
+      recordPoolEvent(PoolEvent::Inactivity);awaitingFirstJob=true;
       //Restart connection
       Serial.println("  Detected more than 2 min without data form stratum server. Closing socket and reopening...");
       client.stop();
-      isMinerSuscribed=false;
+      isMinerSuscribed=false;s_authorized=-1;s_authId=0;
       MiningJobStop(job_pool, s_submition_map);
       poolFailed();
       continue;
@@ -717,8 +745,9 @@ void runStratumWorker(void *name) {
       uint32_t time_now = millis();
       if (time_now - last_job_time >= 10*60*1000)  //10minutes without job (wrap-safe)
       {
+        recordPoolEvent(PoolEvent::JobTimeout);awaitingFirstJob=true;
         client.stop();
-        isMinerSuscribed=false;
+        isMinerSuscribed=false;s_authorized=-1;s_authId=0;
         MiningJobStop(job_pool, s_submition_map);
         poolFailed();
         continue;
@@ -772,6 +801,8 @@ void runStratumWorker(void *name) {
                                           //Increse templates readed
                                           templates++;
                                           s_poolFailures = 0; // the pool works
+                                          connectionFailures=0;
+                                          if(awaitingFirstJob){recordPoolEvent(PoolEvent::JobResumed);awaitingFirstJob=false;}
                                           mMonitor.NerdStatus = NM_hashing;
 
                                           last_job_time = millis();
@@ -856,9 +887,10 @@ void runStratumWorker(void *name) {
                                           #endif
                                       } else
                                       {
+                                        recordPoolEvent(PoolEvent::ParseFailed);awaitingFirstJob=true;
                                         Serial.println("Parsing error, need restart");
                                         client.stop();
-                                        isMinerSuscribed=false;
+                                        isMinerSuscribed=false;s_authorized=-1;s_authId=0;
                                         MiningJobStop(job_pool, s_submition_map);
                                       }
                                       }
@@ -873,6 +905,7 @@ void runStratumWorker(void *name) {
                                           // "result": false without an error is a refusal too
                                           s_authId = 0;
                                           s_authorized = parse_extract_result(line) ? 1 : 0;
+                                          recordPoolEvent(s_authorized==1?PoolEvent::AuthAccepted:PoolEvent::AuthRefused);
                                           if (s_authorized == 1)
                                             Serial.println("[STRATUM] Worker authorized by the pool");
                                           else
@@ -917,6 +950,7 @@ void runStratumWorker(void *name) {
                                         {
                                           s_authId = 0;
                                           s_authorized = 0;
+                                          recordPoolEvent(PoolEvent::AuthRefused);
                                           Serial.printf("[STRATUM] The pool REFUSED the worker \"%s\": check the BTC address in the settings\n", mWorker.wName);
                                           break;
                                         }
@@ -1129,6 +1163,10 @@ void minerWorkerSw(void * task_id)
     {
       wdt_counter = 0;
       esp_task_wdt_reset();
+      // IDLE reclaims stacks/TCBs of self-deleted tasks (Gmail: 12 KiB).
+      // taskYIELD() cannot schedule a lower priority. Briefly block the
+      // always-ready SW miner, outside all mining/shared locks.
+      vTaskDelay(1);
     }
   }
 }
@@ -1872,7 +1910,7 @@ static bool pl_selftest(pl_mine_fn fn)
 static void pl_select_loop()
 {
   g_hwShaMutex.lock();
-  esp_sha_lock_engine(SHA2_256);
+  lockClassicShaEngines();
   periph_module_reset(PERIPH_SHA_MODULE);
   unsigned n = 0;
   const unsigned chip_rev = efuse_hal_get_major_chip_version();
@@ -1893,7 +1931,7 @@ static void pl_select_loop()
   n = PL_FORCE_LOOP; // A/B testing: 0 fast, 1 +2 margins, 2 wide margins, 3 polled, 4 plain
   #endif
   s_pl_loop = n;
-  esp_sha_unlock_engine(SHA2_256);
+  unlockClassicShaEngines();
   g_hwShaMutex.unlock();
   Serial.printf("[MINER] HW SHA loop: %s\n", s_pl_loops[n].name);
 }
@@ -1965,6 +2003,15 @@ void minerWorkerHw(void * task_id)
 
   while (1)
   {
+    if(hardwareComparisonActive()) {
+      noteHardwareComparisonParked(true);
+      do {
+        esp_task_wdt_reset();
+        vTaskDelay(20 / portTICK_PERIOD_MS);
+      } while(hardwareComparisonActive());
+      noteHardwareComparisonParked(false);
+    }
+
     {
       std::lock_guard<std::mutex> lock(s_job_mutex);
       if (result)
@@ -2005,8 +2052,14 @@ void minerWorkerHw(void * task_id)
       uint8_t job_in_work = job->id & 0xFF;
       memcpy(sha_buffer, job->sha_buffer, 80);
 
+      // A low-priority network task must not race this priority-19 task
+      // for every mutex release. Yield at a safe chunk boundary instead.
+      while(g_mailShaRequested.load()) {
+        esp_task_wdt_reset();
+        vTaskDelay(1);
+      }
       g_hwShaMutex.lock();
-      esp_sha_lock_engine(SHA2_256);
+      lockClassicShaEngines();
 #ifdef PIPELINED_ASM_MINING
       {
         if (job->id != pipelined_last_job_id)
@@ -2160,7 +2213,9 @@ void minerWorkerHw(void * task_id)
         }
       }
 #endif // PIPELINED_ASM_MINING
-      esp_sha_unlock_engine(SHA2_256);
+      // Independent completed work; does not wait for Stratum result processing.
+      noteHardwareChunk(result->nonce_count);
+      unlockClassicShaEngines();
       g_hwShaMutex.unlock();
       #ifdef DEBUG_MINING
       debugChunkEndUs = esp_timer_get_time();
